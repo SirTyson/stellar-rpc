@@ -1,7 +1,7 @@
 {
   "hypothesis_viable": 13,
   "hypothesis_not_viable": 4,
-  "review_viable": 0,
+  "review_viable": 1,
   "review_not_viable": 0,
   "poc_viable": 0,
   "poc_not_viable": 0,
@@ -12,14 +12,15 @@
   "publishes": 0,
   "agent_errors": 0,
   "agent_timeouts": 0,
-  "total_spawned": 4,
+  "total_spawned": 5,
   "input_tokens": 0,
-  "output_tokens": 30765,
+  "output_tokens": 41025,
   "cache_read_tokens": 0,
   "per_subsystem": {
     "network": {
       "hypothesis_viable": 4,
-      "hypothesis_not_viable": 2
+      "hypothesis_not_viable": 2,
+      "review_viable": 1
     },
     "methods": {
       "hypothesis_viable": 9,
@@ -29,6 +30,9 @@
   "per_model": {
     "gpt-5.4": {
       "hypothesis_viable": 13
+    },
+    "claude-opus-4-6": {
+      "review_viable": 1
     }
   },
   "tokens_by_stage": {
@@ -36,12 +40,22 @@
       "input": 0,
       "output": 30765,
       "cache_read": 0
+    },
+    "reviewer": {
+      "input": 0,
+      "output": 10260,
+      "cache_read": 0
     }
   },
   "tokens_by_model": {
     "gpt-5.4": {
       "input": 0,
       "output": 30765,
+      "cache_read": 0
+    },
+    "claude-opus-4-6": {
+      "input": 0,
+      "output": 10260,
       "cache_read": 0
     }
   },
@@ -55,12 +69,24 @@
       "hypothesis",
       "gpt-5.4",
       275.0
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      219.5
     ]
   ],
   "costs": {
     "providers": {
       "copilot": {
         "models": {
+          "claude-opus-4-6": {
+            "input_tokens": 0,
+            "output_tokens": 10260,
+            "cache_read_tokens": 0,
+            "total_cost": 0.09,
+            "premium_requests": 3
+          },
           "gpt-5.4": {
             "input_tokens": 0,
             "output_tokens": 30765,
@@ -69,16 +95,23 @@
             "premium_requests": 2
           }
         },
-        "provider_cost": 0.06
+        "provider_cost": 0.15
       }
     },
-    "total_cost": 0.06,
+    "total_cost": 0.15,
     "stages": {
       "hypothesis": {
         "copilot": {
           "input_tokens": 0,
           "output_tokens": 30765,
           "premium_requests": 2
+        }
+      },
+      "reviewer": {
+        "copilot": {
+          "input_tokens": 0,
+          "output_tokens": 10260,
+          "premium_requests": 3
         }
       }
     }
