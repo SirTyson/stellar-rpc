@@ -1,7 +1,7 @@
 {
   "hypothesis_viable": 13,
   "hypothesis_not_viable": 4,
-  "review_viable": 2,
+  "review_viable": 3,
   "review_not_viable": 0,
   "poc_viable": 0,
   "poc_not_viable": 0,
@@ -12,15 +12,15 @@
   "publishes": 0,
   "agent_errors": 0,
   "agent_timeouts": 0,
-  "total_spawned": 6,
+  "total_spawned": 7,
   "input_tokens": 0,
-  "output_tokens": 53008,
+  "output_tokens": 64723,
   "cache_read_tokens": 0,
   "per_subsystem": {
     "network": {
       "hypothesis_viable": 4,
       "hypothesis_not_viable": 2,
-      "review_viable": 2
+      "review_viable": 3
     },
     "methods": {
       "hypothesis_viable": 9,
@@ -32,7 +32,7 @@
       "hypothesis_viable": 13
     },
     "claude-opus-4-6": {
-      "review_viable": 2
+      "review_viable": 3
     }
   },
   "tokens_by_stage": {
@@ -43,7 +43,7 @@
     },
     "reviewer": {
       "input": 0,
-      "output": 22243,
+      "output": 33958,
       "cache_read": 0
     }
   },
@@ -55,7 +55,7 @@
     },
     "claude-opus-4-6": {
       "input": 0,
-      "output": 22243,
+      "output": 33958,
       "cache_read": 0
     }
   },
@@ -79,6 +79,11 @@
       "reviewer",
       "claude-opus-4-6",
       271.3
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      254.2
     ]
   ],
   "costs": {
@@ -87,10 +92,10 @@
         "models": {
           "claude-opus-4-6": {
             "input_tokens": 0,
-            "output_tokens": 22243,
+            "output_tokens": 33958,
             "cache_read_tokens": 0,
-            "total_cost": 0.18,
-            "premium_requests": 6
+            "total_cost": 0.27,
+            "premium_requests": 9
           },
           "gpt-5.4": {
             "input_tokens": 0,
@@ -100,10 +105,10 @@
             "premium_requests": 2
           }
         },
-        "provider_cost": 0.24
+        "provider_cost": 0.33
       }
     },
-    "total_cost": 0.24,
+    "total_cost": 0.33,
     "stages": {
       "hypothesis": {
         "copilot": {
@@ -115,8 +120,8 @@
       "reviewer": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 22243,
-          "premium_requests": 6
+          "output_tokens": 33958,
+          "premium_requests": 9
         }
       }
     }
