@@ -1,10 +1,10 @@
 {
-  "hypothesis_viable": 17,
-  "hypothesis_not_viable": 4,
-  "review_viable": 10,
-  "review_not_viable": 1,
+  "hypothesis_viable": 22,
+  "hypothesis_not_viable": 6,
+  "review_viable": 11,
+  "review_not_viable": 3,
   "poc_viable": 0,
-  "poc_not_viable": 1,
+  "poc_not_viable": 2,
   "final_review_viable": 0,
   "final_review_not_viable": 0,
   "final_review_revisions": 0,
@@ -12,61 +12,62 @@
   "publishes": 0,
   "agent_errors": 1,
   "agent_timeouts": 0,
-  "total_spawned": 18,
+  "total_spawned": 23,
   "input_tokens": 0,
-  "output_tokens": 221350,
+  "output_tokens": 287053,
   "cache_read_tokens": 0,
   "per_subsystem": {
     "network": {
       "hypothesis_viable": 8,
       "hypothesis_not_viable": 2,
-      "review_viable": 6,
-      "poc_not_viable": 1
+      "review_viable": 7,
+      "poc_not_viable": 2,
+      "review_not_viable": 2
     },
     "methods": {
-      "hypothesis_viable": 9,
-      "hypothesis_not_viable": 2,
+      "hypothesis_viable": 14,
+      "hypothesis_not_viable": 4,
       "review_viable": 4,
       "review_not_viable": 1
     }
   },
   "per_model": {
     "gpt-5.4": {
-      "hypothesis_viable": 17
+      "hypothesis_viable": 22
     },
     "claude-opus-4-6": {
-      "review_viable": 10,
-      "review_not_viable": 1,
-      "poc_not_viable": 1,
+      "review_viable": 11,
+      "review_not_viable": 3,
+      "poc_not_viable": 2,
       "errors": 1
     }
   },
   "tokens_by_stage": {
     "hypothesis": {
       "input": 0,
-      "output": 50346,
+      "output": 74258,
       "cache_read": 0
     },
     "reviewer": {
       "input": 0,
-      "output": 126836,
+      "output": 148292,
       "cache_read": 0
     },
     "poc": {
       "input": 0,
-      "output": 44168,
+      "output": 64503,
       "cache_read": 0
     }
   },
   "tokens_by_model": {
     "gpt-5.4": {
       "input": 0,
-      "output": 50346,
+      "output": 74258,
       "cache_read": 0
     },
     "claude-opus-4-6": {
       "input": 0,
-      "output": 171004,
+      "output": 212795,
       "cache_read": 0
     }
   },
@@ -150,6 +151,31 @@
       "reviewer",
       "claude-opus-4-6",
       307.7
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      223.5
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      204.2
+    ],
+    [
+      "poc",
+      "claude-opus-4-6",
+      1266.7
+    ],
+    [
+      "hypothesis",
+      "gpt-5.4",
+      393.8
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      49.0
     ]
   ],
   "costs": {
@@ -158,43 +184,43 @@
         "models": {
           "claude-opus-4-6": {
             "input_tokens": 0,
-            "output_tokens": 171004,
+            "output_tokens": 212795,
             "cache_read_tokens": 0,
-            "total_cost": 1.17,
-            "premium_requests": 39
+            "total_cost": 1.53,
+            "premium_requests": 51
           },
           "gpt-5.4": {
             "input_tokens": 0,
-            "output_tokens": 50346,
+            "output_tokens": 74258,
             "cache_read_tokens": 0,
-            "total_cost": 0.09,
-            "premium_requests": 3
+            "total_cost": 0.12,
+            "premium_requests": 4
           }
         },
-        "provider_cost": 1.26
+        "provider_cost": 1.65
       }
     },
-    "total_cost": 1.26,
+    "total_cost": 1.65,
     "stages": {
       "hypothesis": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 50346,
-          "premium_requests": 3
+          "output_tokens": 74258,
+          "premium_requests": 4
         }
       },
       "reviewer": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 126836,
-          "premium_requests": 36
+          "output_tokens": 148292,
+          "premium_requests": 45
         }
       },
       "poc": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 44168,
-          "premium_requests": 3
+          "output_tokens": 64503,
+          "premium_requests": 6
         }
       }
     }

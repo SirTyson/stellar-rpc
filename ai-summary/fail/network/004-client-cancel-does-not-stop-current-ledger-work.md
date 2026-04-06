@@ -32,3 +32,29 @@ The network wrappers derive timeout contexts correctly, but after parent cancell
 ## Anti-Evidence
 
 Context is still honored at several boundaries (`NewTx`, `GetLedgerRange`, `GetLedger`), so requests can stop promptly between ledgers or while blocked on I/O. The issue is most visible on large JSON pages with expensive per-transaction conversion, not on tiny or already-cached responses.
+
+---
+
+## Review
+
+**Verdict**: NOT_VIABLE
+**Date**: 2026-04-06
+**Reviewed by**: claude-opus-4-6, high
+**Novelty**: FAIL — duplicate of ai-summary/fail/network/003-client-cancel-does-not-stop-current-ledger-work.md
+**Failed At**: reviewer
+
+### Trace Summary
+
+This hypothesis is an exact duplicate of a previously reviewed and rejected hypothesis (fail/network/003). The prior review thoroughly traced the full request path and determined that the network layer already handles cancellation correctly via context propagation, and that the proposed fix would cause goroutine leaks and misleading backlog accounting.
+
+### Code Paths Examined
+
+- See ai-summary/fail/network/003-client-cancel-does-not-stop-current-ledger-work.md for the complete trace
+
+### Why It Failed
+
+Exact duplicate of a previously investigated and rejected hypothesis. The prior review (003) established that: (1) `requestCtx` is derived from the parent context via `context.WithCancel`, so cancellation propagates automatically; (2) adding `ctx.Done()` to the duration limiter select loops would leak goroutines and decouple backlog accounting from reality; (3) the only uninterruptible window is within a single ledger's `processTransactionsInLedger`, which belongs to the methods subsystem, not network.
+
+### Lesson Learned
+
+Hypothesis deduplication should catch identical titles and mechanisms before reaching the reviewer stage.

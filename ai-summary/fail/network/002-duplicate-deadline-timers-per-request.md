@@ -67,3 +67,38 @@ However, the performance impact is negligible for `getTransactions`. A `time.New
 - **Change description**: Replace `context.WithTimeout(ctx, q.limitThreshold)` with `context.WithCancel(ctx)` in both methods. This eliminates the redundant internal timer while preserving cancellation propagation. Do NOT use the alternative direction (replacing `limitCh` with `requestCtx.Done()`) because that conflates timeout expiration with parent-context cancellation, changing behavior on client disconnect.
 - **Correctness check**: Existing tests in `requestdurationlimiter_test.go` cover timeout, warning, normal completion, and panic paths for both HTTP and JRPC. All should continue to pass since no test or production code checks `ctx.Deadline()`.
 - **Benchmark focus**: Measure timer allocations per request (via `runtime.MemStats` or `go tool pprof -alloc_objects`). The improvement would be 2 fewer `time.Timer` heap objects per request. Latency/RPS impact will be negligible — expect < 0.01% change.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_FAIL
+**Date**: 2026-04-06
+**PoC by**: claude-opus-4.6, high
+**Failed At**: poc
+**Iterations**: 3 (build-test-benchmark cycles)
+
+### Failure Reason
+
+The optimization is code-correct (all 7 existing tests pass) but produces no measurable benchmark improvement. Three full build-test-benchmark cycles were run with a proper A/B comparison using identical seed data, and the observed latency differences were entirely attributable to run-to-run variance rather than the code change.
+
+The reviewer's prediction was accurate: saving ~200-400ns of timer allocation per request (< 0.01% of ~3ms median request latency) is far below the noise floor of the benchmark. At moderate loads (100-500 RPS), p50 latency varied by ±30% between consecutive runs of the same binary, dwarfing any theoretical improvement.
+
+### Changes Attempted
+
+Replaced `context.WithTimeout(ctx, q.limitThreshold)` with `context.WithCancel(ctx)` in two locations in `cmd/stellar-rpc/internal/network/requestdurationlimiter.go`:
+- `ServeHTTP` (line 139): HTTP duration limiter
+- `Handle` (line 251): JSON-RPC duration limiter
+
+The change was functionally correct — all 7 tests in the `network` package passed (limiting, no-limiting, warning, and panic paths for both HTTP and JRPC). However, no performance improvement was detectable in benchmarks.
+
+### Benchmark Evidence (3 runs, same seed data, same RPS sweep)
+
+| RPS | Run 1 (opt) p50 | Run 2 (baseline) p50 | Run 3 (opt) p50 |
+|-----|-----------------|---------------------|-----------------|
+| 100 | 2.535ms | 2.955ms | 3.633ms |
+| 500 | 2.641ms | 2.911ms | 3.939ms |
+| 1000 | 2.965ms | 5.555ms | 10.007ms |
+| 1500 | 4.699ms | 1056ms | 1274ms |
+
+Results degraded monotonically with each successive run regardless of whether the optimization was applied, confirming the observed variation is environmental (futurenet conditions, system load, DB cache state) rather than caused by the code change. Source changes reverted.
