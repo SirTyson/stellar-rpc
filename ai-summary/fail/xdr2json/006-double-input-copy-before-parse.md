@@ -110,3 +110,32 @@ The optimization eliminates copy #1 (Go → C via `C.CBytes`) from the xdr2json 
 ### Test Results
 
 All Go tests pass: `go test ./...` — 11 packages tested (xdr2json, methods, db, config, feewindow, ingest, integrationtest, ledgerbucketwindow, network, preflight, util). All Rust tests pass: `cargo test` — 2 test suites (ffi: 1 test, xdr2json: 1 test). Tests were run with `-race` flag for the xdr2json package specifically to verify cgo pointer safety.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Does the change actually address the claimed inefficiency?** YES — I isolated the exact delta under review by benchmarking the current optimized tree against a controlled baseline workspace that differed only by reintroducing the Go-side `C.CBytes` / `FreeGoXDR` copy in `cmd/stellar-rpc/internal/xdr2json/conversion.go`. The extra copy is real and removable.
+2. **Are the preconditions realistic?** PARTIAL — the copy removal only has a chance to matter when `getTransactions` returns large JSON payloads, but in the project's valid-load band it did not reduce latency.
+3. **Is the original code inefficient or working as designed?** INEFFICIENCY — the extra Go-side input copy is not required for correctness in this synchronous call path.
+4. **Does the benchmark improvement match the claimed severity?** NO — under the objective's p50 step-up rule, both baseline and optimized builds had the same throughput ceiling of **100 RPS**. At the valid 100 RPS level, optimized was slightly worse on p50 (`16.055 ms -> 16.343 ms`, **-1.79%**) and only mixed on tails (`p95 46.431 -> 45.311 ms`, `p99 55.647 -> 52.735 ms`). The primary 150 RPS sweep showed only a small p50 gain (`20.591 -> 20.015 ms`, **2.80%**) but worse p95/p99 (`51.551 -> 53.151 ms`, `66.047 -> 69.823 ms`), and 150 RPS is already above the measured ceiling for both builds.
+5. **Is the optimization in scope?** YES — the benchmark exercised only `getTransactions`, the in-scope endpoint.
+6. **Is the benchmark methodology correct?** YES — I used the project's `stellar-rpc-blaster`, built both binaries, ran the required Go and Rust tests first, reused a single generated seed set for both sweeps, used the same local RPC endpoint/DB/hardware, and added focused 150 RPS warm-cache reruns. The warm rerun improved slightly (`p50 20.831 -> 20.479 ms`, `p95 53.951 -> 52.735 ms`, `p99 69.951 -> 67.583 ms`), but the gain stayed under 5% and did not change the ceiling.
+7. **Can the improvement be explained without the optimization?** YES — the only positive signal was a small warm-cache 150 RPS rerun. That is better explained by run-to-run variance / cache effects than by a stable endpoint win, because the full sweep was flat-to-worse at 50/100/200 RPS and the primary 150 RPS sweep regressed on tail latency.
+8. **Is this optimization novel?** YES — but novelty does not overcome the lack of a robust measured improvement.
+
+### Rejection Reason
+
+The code change removes a real micro-inefficiency, but the required project benchmark did not show a stable end-to-end `getTransactions` improvement. The valid throughput ceiling remained **100 RPS** for both builds, and latency at valid load was flat-to-worse; the small warm-cache delta at 150 RPS is above the measured ceiling and too inconsistent to support the finding.
+
+### Failed Checks
+
+- 4
+- 7

@@ -92,3 +92,27 @@ Net waste per call: **one full-payload copy + two O(n) scans** (NUL scan in Rust
 - **Change description**: Replace the null-terminated C string bridge for JSON output with a `(ptr, len)` byte buffer. This eliminates the NUL scan in `safe_cstring`, the `strlen` in `C.GoString`, and the `string→[]byte` copy in Go, reducing the output path from 3 copies + 2 scans to 1 copy.
 - **Correctness check**: Existing Go tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go`, `get_events_test.go`, and `get_transaction_test.go` exercise `ConvertBytes`/`ConvertInterface` through the JSON format path. The Rust-side `xdr_to_json` is also tested via integration tests. All should pass unchanged since the output bytes are identical.
 - **Benchmark focus**: Measure per-page allocation count and bytes allocated for `getTransactions` with `format=json` on event-heavy ledgers. Expect ~40MB reduction in total allocations per full page. Latency improvement likely <5% but should be visible in allocation profiles.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+- **`cmd/stellar-rpc/lib/xdr2json/src/lib.rs:34-38`**: Changed `ConversionResult` struct from `json: *mut libc::c_char` to `json_ptr: *mut u8, json_len: libc::size_t`. In `xdr_to_json` (lines 157-166), replaced `string_to_c(result.json)` with `into_bytes().into_boxed_slice()` + `Box::into_raw`, producing a `(*mut u8, len)` pair. Updated `free_conversion_result` (lines 180-188) to reconstruct the boxed slice via `std::ptr::slice_from_raw_parts_mut` and drop it. Applied the same pattern to `xdr_batch_to_json` (lines 235-257) for both success and error per-item results, and to `free_batch_conversion_result` (lines 306-311).
+
+- **`cmd/stellar-rpc/lib/xdr2json.h:3-7`**: Changed `conversion_result_t` from `const char* const json` to `const unsigned char* json_ptr; size_t json_len;`.
+
+- **`cmd/stellar-rpc/internal/xdr2json/conversion.go:134-168`**: In `convertAnyBytes`, replaced `C.GoString(result.json)` + `json.RawMessage(jsonStr)` with `C.GoBytes(unsafe.Pointer(result.json_ptr), C.int(result.json_len))`, producing `[]byte` directly without an intermediate Go string. In `ConvertBytesSlice` (lines 118-131), applied the same `C.GoBytes` pattern to the batch result extraction loop.
+
+### Demonstration
+
+The optimization replaces the null-terminated C string bridge for JSON output with a `(ptr, len)` byte buffer. This eliminates three unnecessary operations per FFI call: the O(n) NUL-byte scan in Rust's `safe_cstring`, the O(n) `strlen` scan in Go's `C.GoString`, and the full-payload `string→[]byte` copy when constructing `json.RawMessage`. The JSON data now flows from Rust serialization through a single `C.GoBytes` memcpy into the final Go `[]byte`, cutting the output path from 3 copies + 2 scans to 1 copy.
+
+### Test Results
+
+All Go tests pass: `config`, `db`, `feewindow`, `ingest`, `integrationtest`, `ledgerbucketwindow`, `methods`, `network`, `preflight`, `rpcdatastore`, `util`, `xdr2json`. Rust xdr2json test (`borrowed_slice_avoids_extra_clone_for_large_diagnostic_event`) also passes.
