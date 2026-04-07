@@ -80,3 +80,31 @@ Traced the `LedgerReaderTx` interface (ledger.go:35-41) and confirmed it lacks `
 - **Change description**: Add a tx-scoped streaming primitive to `LedgerReaderTx` that uses `Query` instead of `Select`, then refactor `getTransactionsByLedgerSequence` to process ledgers one at a time via the streaming callback instead of materializing batches of 50. Missing-ledger detection should check sequence continuity as each row arrives (track expected sequence, compare to actual).
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` cover pagination, limits, cursor, JSON format, and error cases. The mock needs the new method. Also verify missing-ledger error handling is preserved.
 - **Benchmark focus**: Compare p50/p99 latency for `getTransactions` with dense ledgers and small limits (limit=1, limit=10) where the page fills from the first 1-2 ledgers. Also measure peak heap per request. Expect modest improvement (<5%) on mixed workloads but potentially 10-20% on targeted dense-page-small-limit workloads.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+- **`cmd/stellar-rpc/internal/db/ledger.go:35-52`** — Added `StreamLedgerRange` and `StreamLedgersBySequences` methods to the `LedgerReaderTx` interface, closing the API gap identified in the hypothesis.
+
+- **`cmd/stellar-rpc/internal/db/ledger.go:215-270`** — Implemented both streaming methods on `ledgerReaderTx`. Each uses `l.tx.Query(ctx, sql)` for row-by-row iteration with `Scan` into `xdr.LedgerCloseMeta`, following the proven pattern from `ledgerReader.StreamLedgerRange`. The callback `f` is invoked per row; returning a non-nil error stops iteration immediately.
+
+- **`cmd/stellar-rpc/internal/methods/get_transactions.go:38`** — Added `errPageFull` sentinel error used by the streaming callback to signal page completion without indicating a real failure.
+
+- **`cmd/stellar-rpc/internal/methods/get_transactions.go:436-475`** — Refactored the XDR (non-JSON, non-cache) path in `getTransactionsByLedgerSequence` to use `readTx.StreamLedgersBySequences` instead of `BatchGetLedgersBySequences` + materialization loop. The streaming callback calls `processTransactionsInLedger` per row and returns `errPageFull` when the page is full, stopping the SQL cursor early. The JSON path retains batch fetch since it needs raw LCM bytes for the Rust FFI.
+
+- **`cmd/stellar-rpc/internal/methods/mocks.go:103-116`** — Added `StreamLedgerRange` and `StreamLedgersBySequences` mock methods to `MockLedgerReaderTx` to satisfy the updated interface.
+
+### Demonstration
+
+The optimization adds tx-scoped streaming primitives (`StreamLedgerRange`, `StreamLedgersBySequences`) to `LedgerReaderTx`, using `Query` for row-by-row iteration instead of `Select`-based full materialization. The XDR path in `getTransactions` now processes each ledger as it arrives from SQLite and stops the cursor immediately when the page is full, eliminating unnecessary XDR deserialization of remaining rows. For dense-ledger, small-limit requests (e.g., limit=1 on a ledger with 50 transactions), this avoids deserializing all fetched ledgers when only the first is needed.
+
+### Test Results
+
+All Go tests pass: `db` (0.5s), `methods` (1.5s), and the full `go test ./...` suite (all packages OK). No test failures or regressions.
