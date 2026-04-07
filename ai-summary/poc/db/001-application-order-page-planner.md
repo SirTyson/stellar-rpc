@@ -75,3 +75,32 @@ Traced the full `getTransactions` path from `getTransactionsByLedgerSequence` th
 - **Change description**: Add a new method to `TransactionReader` interface and `transactionHandler`: `GetPageLedgerSequences(ctx context.Context, startSeq uint32, startAppOrder int, limit int) ([]uint32, error)` that executes `SELECT DISTINCT ledger_sequence FROM transactions WHERE (ledger_sequence > ? OR (ledger_sequence = ? AND application_order >= ?)) ORDER BY ledger_sequence, application_order LIMIT ?` and returns the distinct ledger sequences. In `getTransactionsByLedgerSequence`, replace the fixed-batch loop with: (1) call the planner to get the target ledger sequences, (2) fetch only those specific LCMs (either individually or with an `IN (?)` clause), (3) process them with the existing `processTransactionsInLedger`. The `transactionsRPCHandler` struct (line 23) needs a new `transactionReader db.TransactionReader` field. For gap detection, verify each returned ledger exists in `ledger_close_meta` by checking the returned LCM count matches the requested set.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` cover pagination, cursor semantics, and edge cases. Verify that cursor encoding/decoding (TOID format) and the gap-detection error path remain correct. A composite index `ON transactions(ledger_sequence, application_order)` would make the planner query faster but is not required — the existing `index_ledger_sequence` is sufficient.
 - **Benchmark focus**: Measure `getTransactions` latency with `limit=10` over a range where each ledger has 50+ transactions. Compare current (fetch 50 LCMs, deserialize all) vs planner (query index, fetch 1 LCM). Expect >90% reduction in LCM fetches/deserializations and >50% end-to-end latency reduction for this scenario. Also test with sparse histories and large limits to confirm no regression.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/db/transaction.go:51-59`** — Updated `TransactionReader` interface: `GetLedgerSequencesWithTransactions` now accepts `startApplicationOrder int` parameter for row-level cursor precision.
+
+2. **`cmd/stellar-rpc/internal/db/transaction.go:170-200`** — Rewrote `GetLedgerSequencesWithTransactions` implementation to use a subquery with row-level precision. The inner query `SELECT DISTINCT ledger_sequence, application_order FROM transactions WHERE (ledger_sequence > ? OR (ledger_sequence = ? AND application_order >= ?)) AND ledger_sequence <= ? ORDER BY ledger_sequence, application_order LIMIT ?` counts distinct transactions (not distinct ledgers), then the outer query extracts the minimal set of ledger sequences. This deduplicates fee-bump hash entries (which share the same ledger_sequence/application_order) and gives exact page boundaries.
+
+3. **`cmd/stellar-rpc/internal/db/mocks.go:80-101`** — Updated `MockTransactionHandler.GetLedgerSequencesWithTransactions` signature to match the new interface.
+
+4. **`cmd/stellar-rpc/internal/methods/get_transactions.go:301-306`** — Updated the caller to pass `int(start.TransactionOrder)` as the `startApplicationOrder` and removed the `+1` overfetch from the limit (row-level precision handles cursor edge cases natively).
+
+### Demonstration
+
+The planner query now uses `(ledger_sequence, application_order)` precision instead of counting distinct ledger sequences. For a `limit=10` request against dense ledgers (50+ txns each), the inner LIMIT applies to transaction rows, returning only 1 ledger sequence instead of the previous 11 (`limit+1` distinct ledgers). This eliminates ~90% of unnecessary LCM blob fetches and XDR deserializations in the dense-ledger scenario, while degrading gracefully to the same behavior for sparse histories.
+
+### Test Results
+
+All 12 Go test packages pass with `-race` enabled:
+- `cmd/stellar-rpc/internal/methods` — all tests pass (pagination, cursor semantics, JSON format, edge cases including missing ledgers and empty results)
+- `cmd/stellar-rpc/internal/db` — all tests pass (transaction CRUD, batch ingestion, fee-bump handling)
+- All other packages (`config`, `feewindow`, `ingest`, `integrationtest`, `ledgerbucketwindow`, `network`, `preflight`, `rpcdatastore`, `util`, `xdr2json`) — all pass
