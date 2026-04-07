@@ -85,3 +85,29 @@ Traced the full response delivery path from the jrpc2 server's `deliver()` throu
 - **Change description**: Create `[]jhttp.Bridge` instead of a single `jhttp.Bridge`. Each bridge gets the same `decorateHandlers(...)` assigner and `bridgeOptions`. Add a request counter (atomic uint64) and select bridge via `counter % N`. The `Handler` struct's `Close()` must close all bridges. The backlog limiter and duration limiter wrappers remain shared across all bridges (they use atomics, not per-bridge state).
 - **Correctness check**: All existing tests in `cmd/stellar-rpc/internal/integrationtest/` and unit tests must pass. The bridge sharding must be transparent to callers — each bridge independently handles the full JSON-RPC protocol. Key correctness concern: the jrpc2 bridge virtualizes request IDs internally (see `serveInternal` lines 88-124), so cross-bridge ID conflicts cannot occur since each bridge has its own ID namespace.
 - **Benchmark focus**: Measure `getTransactions` RPS and p50/p99 latency at concurrency 16, 32, 64 with `format=json&limit=200`. Compare N=1 (baseline) vs N=4 and N=8 bridges. Expect the throughput ceiling to scale approximately linearly with N. Also compare against H002's direct-dispatch approach — if direct dispatch is feasible, it eliminates the accept loop entirely and should outperform sharding.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_FAIL
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+**Failed At**: poc
+**Iterations**: 0
+
+### Failure Reason
+
+The optimization target no longer exists. The codebase has already replaced `jhttp.NewBridge(...)` with a custom `directBridge` implementation (`cmd/stellar-rpc/internal/directbridge.go`) that completely bypasses the jrpc2 client/server architecture. The `directBridge`:
+
+- Dispatches JSON-RPC requests directly to method handlers without going through `server.NewLocal()`, `channel.Direct()`, or `jrpc2.Client`
+- Has no accept loop, no unbuffered channels, and no server-side mutex blocking response delivery
+- Eliminates the entire serialized response path that the hypothesis identified as the bottleneck
+
+This is exactly the "more invasive direct-dispatch bridge" mentioned in the hypothesis's Anti-Evidence section. There is no `jhttp.Bridge` to shard — the bottleneck has been architecturally eliminated. The suggested PoC approach (sharding N bridges with round-robin) cannot be implemented because the underlying infrastructure (`jhttp.Bridge`, `server.NewLocal`, `channel.Direct`) is no longer used anywhere in the production code.
+
+Verified: `grep -r 'jhttp\.NewBridge\|jhttp\.Bridge' cmd/stellar-rpc/internal/` returns no matches. The only reference to these components is a comment in `directbridge.go` explaining what it replaces.
+
+### Changes Attempted
+
+No source code changes were made. The optimization target (single `jhttp.Bridge`) does not exist in the current codebase, so there was nothing to modify. The hypothesis's finding was valid at the time of analysis but has been superseded by the `directBridge` implementation.
