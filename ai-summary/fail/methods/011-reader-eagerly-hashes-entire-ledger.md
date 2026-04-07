@@ -119,3 +119,37 @@ The optimization eliminates two per-envelope inefficiencies in the `getTransacti
 ### Test Results
 
 All 21 tests in `cmd/stellar-rpc/internal/methods/` pass (including `TestGetTransactions_DefaultLimit`, `TestGetTransactions_CustomLimitAndCursor`, `TestGetTransactions_JSONFormat`, etc.). Full `make go-test` suite passes across all packages: methods, db, config, feewindow, ingest, integrationtest, ledgerbucketwindow, network, preflight, rpcdatastore, util, xdr2json.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Does the change address the claimed inefficiency?** **NO.** The new `ledgerTransactionReader` still eagerly iterates `reader.lcm.TransactionEnvelopes()` in `storeTransactions()` and hashes every envelope before any `Seek` or `Read`, so the full-ledger upfront work described in the hypothesis still exists. The change only makes each hash slightly cheaper by precomputing `networkID` and reusing a `bytes.Buffer`.
+2. **Are the preconditions realistic?** **YES.** Cursor-heavy `getTransactions` workloads are realistic, and the retained-ledger benchmark mix includes cursor-based pagination and both JSON/base64 formats via the project blaster.
+3. **Is the original behavior inefficient or by design?** **INEFFICIENCY, but unchanged.** The underlying eager hashing remains the same structural behavior as the SDK reader; the PoC does not convert it to lazy hashing or eliminate full-ledger preprocessing.
+4. **Does measured impact support the claim?** **NO.** Independent blaster runs on the same DB/seed data show no stable improvement:
+   - **50 RPS**: baseline p50/p95/p99 = **15.423 / 45.023 / 50.367 ms**; optimized = **15.199 / 44.895 / 50.879 ms** (**+1.45% p50**, **+0.28% p95**, **-1.02% p99**)
+   - **100 RPS**: baseline = **16.431 / 46.495 / 54.527 ms**; optimized = **16.751 / 46.655 / 54.719 ms** (**-1.95% p50**)
+   - **200 RPS**: baseline = **52.095 / 210.303 / 278.271 ms**; optimized = **70.527 / 205.695 / 267.775 ms** (**-35.38% p50**)
+   Using the benchmark procedure's escalation rule, both baseline and optimized hit the latency-cliff stop condition at **200 RPS**, so the max valid ceiling remains **100 RPS** for both.
+5. **Is the optimization in scope?** **YES.** The modified code is in the `getTransactions` call chain.
+6. **Is the benchmark methodology correct?** **YES.** I built both baseline and isolated optimized worktrees with `make -j8 build-stellar-rpc`, validated the optimized tree with `make go-test`, ran `stellar-rpc-blaster generate`, then benchmarked baseline and optimized against the same futurenet-backed local RPC instance, same retained DB, same seed file, and the same 50/100/200 RPS sweep.
+7. **Can the observed difference be explained without the optimization?** **YES.** The tiny 50 RPS delta is within normal run-to-run variance, while 100 and 200 RPS are flat-to-worse. There is no consistent latency or throughput gain to attribute to the change.
+8. **Is this optimization novel?** **IRRELEVANT TO VERDICT.** Even if novel, the implementation does not substantiate the claimed optimization.
+
+### Rejection Reason
+
+The PoC does not fix the hypothesized bottleneck. It still eagerly hashes the entire ledger before pagination, and independent end-to-end benchmarks show no measurable improvement and no throughput ceiling increase.
+
+### Failed Checks
+
+- 1
+- 4
+- 7

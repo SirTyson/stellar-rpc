@@ -70,3 +70,23 @@ However, the hypothesis significantly overstates the impact. The term "extractio
 - **Change description**: Remove the separate `GetDiagnosticEvents()` call (line 273) and replace `diagEvents` with `allEvents.DiagnosticEvents` on line 278. The `parseEvents` function can also be extended to handle diagnostic events, consolidating all event marshaling in one place.
 - **Correctness check**: Existing tests for `ParseTransaction` and `getTransactions` handler should pass unchanged. Verify that `tx.Events` output is identical before/after.
 - **Benchmark focus**: No measurable improvement expected. A micro-benchmark of `ParseTransaction` with Soroban transactions would show noise-level differences at best. This is better validated as a code-correctness/cleanup change than a performance optimization.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/db/transaction.go` (lines 268-316): Removed the redundant `ingestTx.GetDiagnosticEvents()` call and the inline diagnostic event marshaling loop from `ParseTransaction`. Moved diagnostic event marshaling into `parseEvents`, which now uses `allEvents.DiagnosticEvents` (already populated by `GetTransactionEvents()`) to populate `tx.Events`. This consolidates all event marshaling (diagnostic, transaction, and contract events) into a single function.
+
+### Demonstration
+
+The optimization eliminates a redundant SDK call by reusing the `DiagnosticEvents` field already present in the `TransactionEvents` struct returned by `GetTransactionEvents()`. While the actual performance impact is negligible (O(1) struct field access), it improves code clarity by consolidating all event marshaling into `parseEvents` and removing dead data flow where `allEvents.DiagnosticEvents` was previously ignored.
+
+### Test Results
+
+All Go tests pass: `db` (0.481s), `methods` (0.276s), `ingest` (0.036s), `integrationtest` (0.078s), and all other packages. All Rust tests pass (2 tests). Build succeeds cleanly.
