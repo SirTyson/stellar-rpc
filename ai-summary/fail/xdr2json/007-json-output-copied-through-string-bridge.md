@@ -116,3 +116,32 @@ The optimization replaces the null-terminated C string bridge for JSON output wi
 ### Test Results
 
 All Go tests pass: `config`, `db`, `feewindow`, `ingest`, `integrationtest`, `ledgerbucketwindow`, `methods`, `network`, `preflight`, `rpcdatastore`, `util`, `xdr2json`. Rust xdr2json test (`borrowed_slice_avoids_extra_clone_for_large_diagnostic_event`) also passes.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Does the change actually address the claimed inefficiency?** YES — tracing the isolated H002-only patch confirms that it removes the Rust `CString`/Go `string` bridge and replaces it with a direct `(ptr,len)` JSON buffer copied once via `C.GoBytes`.
+2. **Are the preconditions realistic?** YES — normal `getTransactions` JSON pages with transaction meta and event payloads do exercise this path repeatedly.
+3. **Is the original code inefficient or working as designed?** INEFFICIENCY — the old bridge does extra scans and copies, but that waste is only one component of the full request cost.
+4. **Does the benchmark improvement match the claimed severity?** NO — independent `stellar-rpc-blaster` runs showed no throughput-ceiling gain and no consistent latency win on valid operating points. Baseline vs optimized: 50 RPS p50 regressed `15.039ms -> 16.135ms`; 100 RPS p50 improved only `16.991ms -> 16.799ms` (~1.1%) while p95/p99 regressed `46.815/53.887 -> 47.519/54.879`; 150 RPS p50 improved `22.079ms -> 21.407ms` (~3.0%) but p95/p99 regressed `55.615/70.655 -> 56.799/71.807`; 175 RPS, the last acceptable zero-error level, regressed materially `25.967/66.879/87.359 -> 27.951/73.215/106.751`.
+5. **Is the optimization in scope?** YES — all measurements were on `getTransactions`.
+6. **Is the benchmark methodology correct?** YES — used the project’s `stellar-rpc-blaster`, generated fresh seed data from the baseline node, ran matched `30s`/`10s` sweeps on the same warmed DB/core state, and compared baseline vs an isolated H002-only patch.
+7. **Can the improvement be explained WITHOUT the optimization?** YES — the only mid-range p50 win is small and inconsistent, and it reverses at the 175-RPS operating point that defines the practical ceiling. The large 200-RPS delta (`120.895ms -> 64.799ms` p50) does not rescue the finding because both variants exceed the acceptable-latency threshold there, so 200 RPS is outside the valid throughput ceiling.
+8. **Is this optimization novel?** YES — but novelty does not overcome the lack of supported endpoint gain.
+
+### Rejection Reason
+
+The isolated H002 patch removes real FFI-output copies, but the required endpoint benchmark does not show a reliable `getTransactions` improvement. The practical zero-error ceiling remains 175 RPS, and latency is mixed-to-worse at the valid operating points that matter.
+
+### Failed Checks
+
+- 4
+- 7

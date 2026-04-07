@@ -1,20 +1,20 @@
 {
-  "hypothesis_viable": 29,
+  "hypothesis_viable": 34,
   "hypothesis_not_viable": 22,
-  "review_viable": 17,
-  "review_not_viable": 11,
+  "review_viable": 18,
+  "review_not_viable": 12,
   "poc_viable": 7,
   "poc_not_viable": 0,
   "final_review_viable": 0,
-  "final_review_not_viable": 5,
+  "final_review_not_viable": 6,
   "final_review_revisions": 2,
   "condensations": 1,
   "publishes": 0,
   "agent_errors": 1,
   "agent_timeouts": 0,
-  "total_spawned": 57,
+  "total_spawned": 61,
   "input_tokens": 0,
-  "output_tokens": 918178,
+  "output_tokens": 988562,
   "cache_read_tokens": 0,
   "per_subsystem": {
     "methods": {
@@ -44,7 +44,7 @@
       "review_not_viable": 2
     },
     "ingest": {
-      "hypothesis_viable": 3,
+      "hypothesis_viable": 8,
       "hypothesis_not_viable": 2,
       "review_viable": 3
     },
@@ -54,23 +54,24 @@
       "review_viable": 1,
       "review_not_viable": 2,
       "poc_viable": 2,
-      "final_review_not_viable": 1
+      "final_review_not_viable": 2
     },
     "db": {
       "hypothesis_viable": 7,
       "hypothesis_not_viable": 3,
-      "review_viable": 5
+      "review_viable": 6,
+      "review_not_viable": 1
     }
   },
   "per_model": {
     "claude-opus-4-6": {
-      "review_not_viable": 11,
-      "review_viable": 17,
+      "review_not_viable": 12,
+      "review_viable": 18,
       "poc_viable": 7
     },
     "gpt-5.4": {
-      "hypothesis_viable": 29,
-      "final_review_not_viable": 5,
+      "hypothesis_viable": 34,
+      "final_review_not_viable": 6,
       "errors": 1,
       "final_review_revisions": 2
     },
@@ -79,17 +80,17 @@
   "tokens_by_stage": {
     "reviewer": {
       "input": 0,
-      "output": 335076,
+      "output": 356511,
       "cache_read": 0
     },
     "hypothesis": {
       "input": 0,
-      "output": 257316,
+      "output": 277836,
       "cache_read": 0
     },
     "final_review": {
       "input": 0,
-      "output": 221627,
+      "output": 250056,
       "cache_read": 0
     },
     "condensation": {
@@ -106,12 +107,12 @@
   "tokens_by_model": {
     "claude-opus-4-6": {
       "input": 0,
-      "output": 424790,
+      "output": 446225,
       "cache_read": 0
     },
     "gpt-5.4": {
       "input": 0,
-      "output": 478943,
+      "output": 527892,
       "cache_read": 0
     },
     "claude-sonnet-4-6": {
@@ -395,6 +396,26 @@
       "reviewer",
       "claude-opus-4-6",
       314.6
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      348.6
+    ],
+    [
+      "reviewer",
+      "claude-opus-4-6",
+      136.2
+    ],
+    [
+      "hypothesis",
+      "gpt-5.4",
+      411.9
+    ],
+    [
+      "final_review",
+      "gpt-5.4",
+      1296.5
     ]
   ],
   "costs": {
@@ -403,10 +424,10 @@
         "models": {
           "claude-opus-4-6": {
             "input_tokens": 0,
-            "output_tokens": 424790,
+            "output_tokens": 446225,
             "cache_read_tokens": 0,
-            "total_cost": 3.15,
-            "premium_requests": 105
+            "total_cost": 3.33,
+            "premium_requests": 111
           },
           "claude-sonnet-4-6": {
             "input_tokens": 0,
@@ -417,36 +438,36 @@
           },
           "gpt-5.4": {
             "input_tokens": 0,
-            "output_tokens": 478943,
+            "output_tokens": 527892,
             "cache_read_tokens": 0,
-            "total_cost": 0.57,
-            "premium_requests": 19
+            "total_cost": 0.63,
+            "premium_requests": 21
           }
         },
-        "provider_cost": 3.75
+        "provider_cost": 3.99
       }
     },
-    "total_cost": 3.75,
+    "total_cost": 3.99,
     "stages": {
       "reviewer": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 335076,
-          "premium_requests": 84
+          "output_tokens": 356511,
+          "premium_requests": 90
         }
       },
       "hypothesis": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 257316,
-          "premium_requests": 11
+          "output_tokens": 277836,
+          "premium_requests": 12
         }
       },
       "final_review": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 221627,
-          "premium_requests": 8
+          "output_tokens": 250056,
+          "premium_requests": 9
         }
       },
       "condensation": {
