@@ -108,3 +108,28 @@ The optimization adds a 10-ledger in-memory LCM cache populated by the tip-follo
 ### Test Results
 
 All Go tests pass: `go test ./...` reports ok for all 12 testable packages, including `methods` (10 getTransactions tests covering default/custom limits, cursors, JSON format, missing ledgers, and error cases) and `ingest` (ingestion service tests). Build succeeds with `make build-stellar-rpc`.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The implementation trace is real, but the performance proof is not yet good enough to confirm. The official `stellar-rpc-blaster` workload does not line up cleanly with the optimization: it randomizes `getTransactions` request bodies and uses JSON roughly 50% of the time, while this cache only affects full-cache-hit, non-JSON requests in the newest 10-ledger window. On top of that, my independent benchmark attempt on isolated baseline/optimized worktrees could not produce a valid before/after comparison because the local review server became unstable under the required benchmark setup on this shared host, and the only partial baseline run I captured already showed heavy errors at 50 RPS (46 ok / 1078 err by 25s), which is not usable evidence for a measured improvement.
+
+### Revision Instructions
+
+1. Re-run the official `stellar-rpc-blaster` baseline vs optimized sweep in an environment where the review server can stay up for the full benchmark window without captive-core/live-network port conflicts.
+2. Produce independent before/after blaster outputs with zero-error runs and extract the authoritative p50/p95/p99 and ceiling numbers from those runs.
+3. Either:
+   - broaden the optimization so it materially affects the official mixed-format workload, or
+   - reframe/downgrade the claim to hot base64 tip-polling only (likely Informational unless the official benchmark shows a measurable gain).
+
+### Checks Passed So Far
+
+- Code trace passed: tip-following ingest appends post-commit `LedgerCloseMeta` values into an in-memory window, and `getTransactions` consults that window before the DB path on non-JSON full-cache hits.
+- Isolation/build validation passed: independent baseline and optimized worktrees both built cleanly and passed `make go-test`.
+- Scope check passed: the change stays in the `getTransactions` call chain and does not require DB schema or third-party dependency changes.
