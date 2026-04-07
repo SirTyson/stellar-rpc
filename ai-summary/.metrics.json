@@ -5,16 +5,16 @@
   "review_not_viable": 4,
   "poc_viable": 3,
   "poc_not_viable": 0,
-  "final_review_viable": 0,
+  "final_review_viable": 1,
   "final_review_not_viable": 2,
   "final_review_revisions": 0,
   "condensations": 0,
   "publishes": 0,
   "agent_errors": 0,
   "agent_timeouts": 0,
-  "total_spawned": 23,
+  "total_spawned": 24,
   "input_tokens": 0,
-  "output_tokens": 334258,
+  "output_tokens": 363093,
   "cache_read_tokens": 0,
   "per_subsystem": {
     "network": {
@@ -22,7 +22,8 @@
       "hypothesis_viable": 3,
       "hypothesis_not_viable": 3,
       "review_viable": 1,
-      "poc_viable": 1
+      "poc_viable": 1,
+      "final_review_viable": 1
     },
     "methods": {
       "poc_viable": 2,
@@ -43,7 +44,8 @@
     },
     "gpt-5.4": {
       "hypothesis_viable": 13,
-      "final_review_not_viable": 2
+      "final_review_not_viable": 2,
+      "final_review_viable": 1
     }
   },
   "tokens_by_stage": {
@@ -64,7 +66,7 @@
     },
     "final_review": {
       "input": 0,
-      "output": 53219,
+      "output": 82054,
       "cache_read": 0
     }
   },
@@ -76,7 +78,7 @@
     },
     "gpt-5.4": {
       "input": 0,
-      "output": 134201,
+      "output": 163036,
       "cache_read": 0
     }
   },
@@ -185,6 +187,11 @@
       "reviewer",
       "claude-opus-4-6",
       252.6
+    ],
+    [
+      "final_review",
+      "gpt-5.4",
+      1459.3
     ]
   ],
   "costs": {
@@ -200,16 +207,16 @@
           },
           "gpt-5.4": {
             "input_tokens": 0,
-            "output_tokens": 134201,
+            "output_tokens": 163036,
             "cache_read_tokens": 0,
-            "total_cost": 0.18,
-            "premium_requests": 6
+            "total_cost": 0.21,
+            "premium_requests": 7
           }
         },
-        "provider_cost": 1.53
+        "provider_cost": 1.56
       }
     },
-    "total_cost": 1.53,
+    "total_cost": 1.56,
     "stages": {
       "reviewer": {
         "copilot": {
@@ -235,8 +242,8 @@
       "final_review": {
         "copilot": {
           "input_tokens": 0,
-          "output_tokens": 53219,
-          "premium_requests": 2
+          "output_tokens": 82054,
+          "premium_requests": 3
         }
       }
     }
