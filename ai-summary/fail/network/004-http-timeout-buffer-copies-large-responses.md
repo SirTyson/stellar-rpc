@@ -82,3 +82,46 @@ I traced the full HTTP request path from `httpRequestDurationLimiter.ServeHTTP` 
 - **Change description**: Introduce a `sync.Pool` for `bufferedResponseWriter` instances (including their backing `[]byte` buffers) to reduce per-request allocation pressure. The pool should use `bytes.Buffer` or a pre-sized `[]byte` slice. Additionally, consider allowing `httpRequestDurationLimiter` to bypass buffering when the per-method JRPC timeout already provides protection (i.e., when the HTTP timeout ≥ the JRPC timeout). However, this architectural change is riskier; the pool approach is the simpler and safer optimization.
 - **Correctness check**: `cmd/stellar-rpc/internal/network/requestdurationlimiter_test.go` has tests for HTTP duration limiting including `TestHTTPRequestDurationLimiter_Limiting`, `TestHTTPRequestDurationLimiter_NoLimiting`, `TestHTTPRequestDurationLimiter_DownstreamPanic`, and buffered writer tests. All must continue to pass.
 - **Benchmark focus**: Measure allocations per request (`-benchmem`) and GC pause times under concurrent large-response load. The latency improvement will likely be <5% for single requests, but allocation count and bytes-allocated-per-op should show a clear improvement with pooling. Test with `getTransactions?limit=200&format=json` against ledgers with events.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_FAIL
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+**Failed At**: poc
+**Iterations**: 1
+
+### Failure Reason
+
+The `sync.Pool` optimization for `bufferedResponseWriter` was implemented correctly and all 10 existing unit tests passed. However, load testing with stellar-rpc-blaster against futurenet showed no measurable improvement in throughput or latency that exceeds measurement noise.
+
+**Benchmark comparison (getTransactions, 30s runs):**
+
+| RPS | Metric | Baseline | Optimized | Delta |
+|-----|--------|----------|-----------|-------|
+| 10 | p50 | 12.1ms | 10.9ms | -9.7% |
+| 10 | p99 | 38.7ms | 35.1ms | -9.1% |
+| 200 | p50 | 13.1ms | 12.8ms | -1.7% |
+| 200 | p99 | 41.9ms | 41.1ms | -2.0% |
+| 500 | p50 | 1884ms | 2146ms | +13.9% |
+| 500 | p99 | 5378ms | 6664ms | +23.9% |
+| 1000 | errors | 11542 | 11098 | -3.8% |
+
+At low load (10-200 RPS), the optimized version shows 2-10% p50 improvement, but with only 274 total requests at 10 RPS this is within statistical noise. At 200 RPS the difference narrows to ~2%, well within run-to-run variance.
+
+At high load (500 RPS), the optimized version actually performed **worse** (p50 +14%, p99 +24%), confirming the difference at low load was measurement noise rather than a real effect. Both versions hit their throughput ceiling between 200-500 RPS with identical error behavior at 1000+ RPS.
+
+This confirms the reviewer's severity assessment: the extra buffer copy represents <5% of total request latency, dominated by DB reads, XDR decoding, and JSON marshaling. The `sync.Pool` eliminates one allocation per request but the effect is below the noise floor of the load test methodology.
+
+### Changes Attempted
+
+Added a `sync.Pool` for `bufferedResponseWriter` in `cmd/stellar-rpc/internal/network/requestdurationlimiter.go`:
+- `bufferedResponseWriterPool` (`sync.Pool`) with `New` function creating pre-initialized instances
+- `getBufferedResponseWriter()` — retrieves from pool, resets buffer (keeping backing capacity), clears and copies headers
+- `putBufferedResponseWriter()` — returns to pool, discards buffers >1MB to bound pool memory
+- `ServeHTTP` modified to use pool get/put on the request-completed path (not on timeout path where the goroutine may still reference the buffer)
+- All 10 existing tests in `network` package passed with the change
+
+Changes were reverted since the optimization produced no measurable benchmark improvement.
