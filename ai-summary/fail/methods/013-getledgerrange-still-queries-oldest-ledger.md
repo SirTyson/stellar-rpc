@@ -112,3 +112,38 @@ When both oldest and latest ledger bounds are cached, `GetLedgerRange` returns i
 ### Test Results
 
 All Go tests pass: db (0.481s), methods (0.281s), feewindow (0.871s), ingest (0.043s), integrationtest (0.088s), config, ledgerbucketwindow, network, preflight, rpcdatastore, util, xdr2json — all OK. No test failures.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Does the change actually address the claimed inefficiency?** **NO.** `getTransactions` uses `LedgerReaderTx.GetLedgerRange()`, and that path still just calls `getLedgerRangeWithCache(...)` when `oldestLedgerSeq` is missing, then returns without writing the oldest bound back to the global cache (`cmd/stellar-rpc/internal/db/ledger.go:63-80`). After retention trimming, `writeTx.Commit` explicitly zeroes the oldest cache (`cmd/stellar-rpc/internal/db/db.go:350-356`). An independent isolated test in the optimized worktree confirmed that after trim invalidates `db.cache.oldestLedgerSeq`, a subsequent `readTx.GetLedgerRange()` returns the right range but leaves `db.cache.oldestLedgerSeq == 0`, so the next `getTransactions` request still pays the oldest-ledger query.
+2. **Are the preconditions realistic?** **YES.** `getTransactions` is the exact endpoint under test, and retention trimming is normal steady-state behavior on a synced node.
+3. **Is the original code inefficient or working as designed?** **INEFFICIENCY.** The original oldest-ledger lookup is real wasted work, but this implementation does not remove that work from the steady-state `getTransactions` path it claims to optimize.
+4. **Does the benchmark improvement match the claimed severity?** **NO.** Independent `stellar-rpc-blaster` runs showed no throughput-ceiling gain (`150 RPS -> 150 RPS`) and mostly worse latency:
+   - **50 RPS**: p50 `15.679 -> 15.087 ms` (**+3.78%**), p95 `45.791 -> 43.423 ms` (**+5.17%**), p99 `51.423 -> 50.207 ms` (**+2.36%**)
+   - **100 RPS**: p50 `17.023 -> 17.775 ms` (**-4.42%**), p95 `46.495 -> 48.255 ms` (**-3.79%**), p99 `53.023 -> 55.519 ms` (**-4.71%**)
+   - **150 RPS**: p50 `19.967 -> 20.735 ms` (**-3.85%**), p95 `52.415 -> 53.247 ms` (**-1.59%**), p99 `64.735 -> 66.943 ms` (**-3.41%**)
+   - **200 RPS**: p50 `50.143 -> 60.639 ms` (**-20.93%**), p95 `171.903 -> 211.455 ms` (**-23.01%**), p99 `227.199 -> 294.399 ms` (**-29.58%**)
+   All runs had zero errors, so the absence of improvement is not hidden by instability.
+5. **Is the optimization in scope?** **YES.** The change is in the `getTransactions` ledger-range path.
+6. **Is the benchmark methodology correct?** **CORRECT.** I used isolated baseline and optimized worktrees from the same base commit, rebuilt with `make -j8 build-stellar-rpc`, validated the optimized build with `make go-test`, ran a futurenet-backed local RPC, regenerated seed data after restart, and used the project benchmarking tool for a `50/100/150/200` RPS sweep with `30s` duration and `10s` ramp-up.
+7. **Can the observed difference be explained without the optimization?** **YES.** The only favorable result is the low-load 50 RPS run, and that is plausibly explained by transient warm-cache effects from the required `getHealth` polling path. Once trim invalidates the oldest bound, the optimized `LedgerReaderTx` path does not repopulate it, which matches the lack of sustained improvement and the regressions at higher load.
+8. **Is this optimization novel?** **NOVEL**, but not a working optimization.
+
+### Rejection Reason
+
+The patch does not make the `getTransactions` hot path self-sufficient. After retention trimming invalidates `oldestLedgerSeq`, `LedgerReaderTx.GetLedgerRange()` still performs the oldest-ledger query without warming the global cache, so the claimed per-request lookup elimination does not hold under normal operation. Independent blaster benchmarks therefore show no throughput gain and mostly worse latency.
+
+### Failed Checks
+
+- Check 1 — the `getTransactions` read-transaction path does not reliably eliminate the oldest-ledger query.
+- Check 4 — independent benchmark results do not support a real performance win.
+- Check 7 — the only small improvement is better explained by transient warm-cache effects than by the claimed optimization.
