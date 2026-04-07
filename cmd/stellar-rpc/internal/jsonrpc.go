@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/cors"
+	"github.com/sirupsen/logrus"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
 	"github.com/stellar/go-stellar-sdk/support/log"
@@ -70,7 +71,7 @@ type HandlerParams struct {
 	DataStoreLedgerReader rpcdatastore.LedgerReader
 }
 
-func decorateHandlers(daemon interfaces.Daemon, logger *log.Entry, m handler.Map) handler.Map {
+func decorateHandlers(daemon interfaces.Daemon, logger *log.Entry, debugEnabled bool, m handler.Map) handler.Map {
 	requestMetric := prometheus.NewSummaryVec(prometheus.SummaryOpts{
 		Namespace:  daemon.MetricsNamespace(),
 		Subsystem:  "json_rpc",
@@ -99,7 +100,7 @@ func decorateHandlers(daemon interfaces.Daemon, logger *log.Entry, m handler.Map
 				}
 			}
 			requestMetric.With(label).Observe(duration.Seconds())
-			logResponse(logger, reqID, duration, label["status"], result)
+			logResponse(logger, reqID, duration, label["status"], result, debugEnabled)
 			return result, err
 		})
 	}
@@ -121,7 +122,7 @@ func logRequest(logger *log.Entry, reqID string, req *jrpc2.Request) {
 	logger.Debug("starting JSONRPC request params")
 }
 
-func logResponse(logger *log.Entry, reqID string, duration time.Duration, status string, response any) {
+func logResponse(logger *log.Entry, reqID string, duration time.Duration, status string, response any, debugEnabled bool) {
 	logger = logger.WithFields(log.F{
 		"subsys":   "jsonrpc",
 		"req":      reqID,
@@ -131,7 +132,7 @@ func logResponse(logger *log.Entry, reqID string, duration time.Duration, status
 	})
 	logger.Info("finished JSONRPC request")
 
-	if status == "ok" {
+	if debugEnabled && status == "ok" {
 		responseBytes, err := json.Marshal(response)
 		if err == nil {
 			// the result is useful but can be really verbose, let's only print it with debug level
@@ -325,6 +326,7 @@ func NewJSONRPCHandler(cfg *config.Config, params HandlerParams) Handler {
 	bridge := jhttp.NewBridge(decorateHandlers(
 		params.Daemon,
 		params.Logger,
+		cfg.LogLevel >= logrus.DebugLevel,
 		handlersMap),
 		&bridgeOptions)
 
