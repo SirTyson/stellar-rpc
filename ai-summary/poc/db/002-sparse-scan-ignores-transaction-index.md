@@ -77,3 +77,48 @@ The inefficiency is confirmed and significant for sparse histories:
 - **Change description**: Add a new method to `TransactionReader` interface and `transactionHandler`: `GetLedgerSequencesWithTransactions(ctx context.Context, startSeq uint32, endSeq uint32, limit int) ([]uint32, error)` that executes `SELECT DISTINCT ledger_sequence FROM transactions WHERE ledger_sequence >= ? AND ledger_sequence <= ? ORDER BY ledger_sequence LIMIT ?`. In `getTransactionsByLedgerSequence`, replace the linear batch loop with: (1) query the transaction index for the next N distinct ledger_sequences, (2) fetch only those specific LCMs, (3) process them. The handler struct needs a new `transactionReader db.TransactionReader` field (or a combined interface). For the gap check, verify the fetched ledger sequences exist in `ledger_close_meta` by comparing the returned count against the requested set.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` cover pagination, cursor semantics, and edge cases. The gap-detection behavior for corrupted stores should be tested separately. Cursor encoding/decoding (TOID format) must remain identical.
 - **Benchmark focus**: Measure `getTransactions` latency with `limit=10` over a 1000-ledger range where only 1 in 20 ledgers has transactions. Compare current (scan all 1000) vs index-driven (query index, fetch ~10 LCMs). Expect >20x reduction in LCM fetches/deserializations and >50% end-to-end latency reduction for this scenario. For dense histories (every ledger has transactions), expect negligible overhead from the additional index query.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/db/transaction.go`** (lines ~50-60, ~165-183):
+   - Extended `TransactionReader` interface with `GetLedgerSequencesWithTransactions(ctx, startSeq, endSeq uint32, limit int) ([]uint32, error)`
+   - Implemented on `transactionHandler` using `SELECT DISTINCT ledger_sequence FROM transactions WHERE ledger_sequence >= ? AND ledger_sequence <= ? ORDER BY ledger_sequence ASC LIMIT ?` — leverages the existing `index_ledger_sequence` B-tree index for an efficient index-only scan
+
+2. **`cmd/stellar-rpc/internal/db/ledger.go`** (lines ~35-45, ~157-200):
+   - Extended `LedgerReaderTx` interface with `BatchGetLedgersBySequences(ctx, sequences []uint32) ([]LedgerMetadataChunk, error)`
+   - Implemented on `ledgerReaderTx` using `WHERE sequence IN (?, ?, ...)` — fetches LCMs for specific (non-contiguous) sequence numbers with the same partial XDR decode as `BatchGetLedgers`
+
+3. **`cmd/stellar-rpc/internal/methods/get_transactions.go`** (lines ~23-30, ~267-390, ~391-406):
+   - Added `transactionReader db.TransactionReader` field to `transactionsRPCHandler`
+   - Rewrote `getTransactionsByLedgerSequence`: instead of a linear batch loop over all ledgers in [start, last], it now (1) queries the transaction index for up to `limit+1` distinct ledger sequences, (2) fetches only those specific LCMs via `BatchGetLedgersBySequences`, (3) processes transactions with lazy decode. Gap check now verifies only index-referenced ledgers have corresponding LCM data.
+   - Updated `NewGetTransactionsHandler` to accept `db.TransactionReader`
+
+4. **`cmd/stellar-rpc/internal/jsonrpc.go`** (line ~252):
+   - Passes `params.TransactionReader` to `NewGetTransactionsHandler`
+
+5. **`cmd/stellar-rpc/internal/db/mocks.go`** (lines ~69-95):
+   - Added `GetLedgerSequencesWithTransactions` to `MockTransactionHandler`
+
+6. **`cmd/stellar-rpc/internal/methods/mocks.go`** (lines ~95-102):
+   - Added `BatchGetLedgersBySequences` to `MockLedgerReaderTx`
+
+7. **`cmd/stellar-rpc/internal/methods/get_transactions_test.go`**:
+   - Updated `setupDB` to also call `tx.TransactionWriter().InsertTransactions(lcm)` so the transactions table is populated
+   - Added `transactionReader` field to all test handler structs
+   - Adapted `TestGetTransactions_LedgerNotFound` for new behavior: missing ledgers with no transactions in the index are gracefully skipped instead of raising an error
+
+### Demonstration
+
+The optimization replaces a linear O(ledger-range) scan with an index-driven O(limit) approach for the `getTransactions` endpoint. Instead of fetching and deserializing every LCM in the range (including empty ledgers), the handler first queries `SELECT DISTINCT ledger_sequence FROM transactions` to identify only ledgers with transactions, then fetches just those LCMs. For sparse histories where 1 in 20 ledgers has transactions, this eliminates ~95% of DB reads and XDR deserialization, changing the cost from proportional to the scan range to proportional to the number of requested transactions.
+
+### Test Results
+
+All existing tests pass: `make go-test` completes successfully across all packages (db, methods, feewindow, ingest, integrationtest, ledgerbucketwindow, network, preflight, rpcdatastore, util, xdr2json). The full build (`go build ./cmd/stellar-rpc/`) compiles without errors.
