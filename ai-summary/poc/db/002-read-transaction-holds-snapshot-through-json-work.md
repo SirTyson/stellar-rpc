@@ -78,3 +78,23 @@ The inefficiency is structurally real: after `BatchGetLedgerMetas` returns, the 
 - **Change description**: After all `BatchGetLedgerMetas` reads complete for a given batch, close the read transaction before calling `processTransactionsInLedger`. For multi-batch requests, re-open the read transaction for the next batch. Alternatively, pre-compute the number of ledgers needed and fetch them all in one read scope.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` cover pagination and range validation; verify no test fails when the snapshot is released between batches
 - **Benchmark focus**: Measure `wal_checkpoint` duration (already instrumented in `durationMetrics["wal_checkpoint"]`) under concurrent getTransactions+ingestion load. Expected improvement: negligible under normal load; potentially measurable only under sustained high-concurrency JSON format requests
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/methods/get_transactions.go:339-343` — Added explicit early `readTx.Done()` call after `BatchGetLedgersBySequences` and chunk verification complete, but before the CPU-heavy transaction processing loop. The existing `defer readTx.Done()` (line 261-263) remains as a safety net for early error returns and the empty-results path.
+
+### Demonstration
+
+The optimization releases the SQLite read-only snapshot immediately after all needed ledger data is materialized into Go memory (`chunks` slice), before the CPU-heavy processing loop that performs XDR unmarshaling, transaction parsing, base64 encoding, and optional Rust FFI JSON conversion. This prevents the snapshot from blocking `PRAGMA wal_checkpoint(TRUNCATE)` during concurrent ingestion commits. The change is safe because `Done()` calls `Rollback()` which is idempotent — the deferred call becomes a no-op.
+
+### Test Results
+
+All 8 getTransactions unit tests pass (TestGetTransactions_DefaultLimit, TestGetTransactions_DefaultLimitExceedsLatestLedger, TestGetTransactions_CustomLimit, TestGetTransactions_CustomLimitAndCursor, TestGetTransactions_InvalidStartLedger, TestGetTransactions_LedgerNotFound, TestGetTransactions_LimitGreaterThanMaxLimit, TestGetTransactions_InvalidCursorString, TestGetTransactions_JSONFormat, TestGetTransactions_NoResults). All 17 test packages across `cmd/stellar-rpc/internal/...` pass with `-race` enabled.
