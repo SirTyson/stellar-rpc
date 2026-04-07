@@ -90,3 +90,49 @@ The optimization eliminates a redundant SDK call by reusing the `DiagnosticEvent
 ### Test Results
 
 All Go tests pass: `db` (0.481s), `methods` (0.276s), `ingest` (0.036s), `integrationtest` (0.078s), and all other packages. All Rust tests pass (2 tests). Build succeeds cleanly.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The code change is real and safe, but the performance evidence is not controlled tightly enough to confirm the finding. I isolated H002 in a clean worktree based on commit `651743f`, verified `make -j8 build-stellar-rpc` and `make go-test` pass before and after the one-file `transaction.go` change, and then benchmarked with `stellar-rpc-blaster`.
+
+The first A/B sweep was not apples-to-apples:
+
+- The optimized run used a freshly generated seed corpus immediately before benchmarking, which warmed the RPC data path.
+- The baseline run initially reused that seed file without the same warm-up and was much colder.
+- Results were unstable across load levels: 100 RPS was nearly identical, 200 RPS showed a large gap, 300 RPS was slightly worse for the optimized build, and both variants degraded badly by 400 RPS.
+
+Independent measurements:
+
+| Run | p50 | p95 | p99 | Errors |
+|---|---:|---:|---:|---:|
+| Baseline 100 RPS | 17.567 ms | 48.191 ms | 54.655 ms | 0 |
+| Optimized 100 RPS | 17.119 ms | 47.935 ms | 54.399 ms | 0 |
+| Baseline 200 RPS (cold) | 235.391 ms | 452.863 ms | 532.991 ms | 0 |
+| Optimized 200 RPS | 62.623 ms | 190.591 ms | 243.583 ms | 0 |
+| Baseline 300 RPS | 3489.791 ms | 8343.551 ms | 10076.159 ms | 0 |
+| Optimized 300 RPS | 3688.447 ms | 8314.879 ms | 9543.679 ms | 0 |
+| Baseline 400 RPS | 3551.231 ms | 15007.743 ms | 15007.743 ms | 1702 |
+| Optimized 400 RPS | 3475.455 ms | 12279.807 ms | 15007.743 ms | 1449 |
+
+I then reran the clean baseline with the same `generate` warm-up step immediately before a 200 RPS run. That alone dropped baseline p50 from `235.391 ms` to `125.2 ms`, showing the original 200 RPS delta was strongly influenced by cache/warm-up effects. That still does not prove H002 has zero impact, but it does mean the current PoC does not isolate H002 well enough to confirm it.
+
+### Revision Instructions
+
+1. Benchmark **only** the isolated H002 change in a clean worktree. Do not include other `getTransactions`, `jsonrpc`, `xdr2json`, or reader changes in the benchmarked build.
+2. Use the **same seed corpus and same warm-up procedure** for baseline and optimized runs. Either run `generate` immediately before both variants, or before neither.
+3. Repeat the comparison at least **A/B/A/B** at the same RPS (200 RPS is the interesting point from this review) to rule out warm-cache and one-off system variance.
+4. Keep the final judgment tied to `getTransactions` only. If the effect remains negligible or inconsistent after controlled paired runs, downgrade this to a cleanup / informational change rather than a confirmed performance optimization.
+5. If you want to argue that event-heavy Soroban pages amplify the win, show that with a controlled seed corpus containing those transactions rather than relying on mixed futurenet traffic alone.
+
+### Checks Passed So Far
+
+- The redundancy claim in `ParseTransaction` is correct: `GetTransactionEvents()` already carries diagnostic events, and reusing `allEvents.DiagnosticEvents` is behavior-safe.
+- The isolated H002 patch builds cleanly and passes the existing Go test suite.
+- The independent blaster runs show the optimization is **not** obviously harmful, but they do **not** yet establish a stable, attributable throughput or latency win.
