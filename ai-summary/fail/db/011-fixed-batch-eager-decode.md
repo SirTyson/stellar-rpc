@@ -94,3 +94,33 @@ The optimization replaces eager full-XDR deserialization of up to 50 `LedgerClos
 ### Test Results
 
 All 16 test packages under `cmd/stellar-rpc/internal/...` pass with `-race` flag enabled, including the `methods` package (which contains `get_transactions_test.go` with direct coverage of `getTransactionsByLedgerSequence`) and the `db` package (which covers `BatchGetLedgers` and `BatchGetLedgerMetas`).
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Exercises claimed inefficiency**: PARTIAL. The optimized path does avoid full `LedgerCloseMeta` deserialization for unused ledgers, but it still fetches every `meta` blob for the 50-ledger batch and now also partially XDR-decodes every header up front in `BatchGetLedgers`.
+2. **Realistic preconditions**: NOT SUPPORTED. Under the project benchmark’s real `getTransactions` workload, the saved decode work does not translate into end-to-end wins.
+3. **Inefficiency vs. by-design**: SECOND-ORDER. The eager decode is wasteful in isolation, but the independent measurements indicate it is not the dominant cost on the production request path.
+4. **Benchmark improvement vs. claimed severity**: FAILED. Independent blaster runs on the same machine, same ports, and same seed set showed regressions instead of improvements:
+   - **75 RPS**: p50 `16.335ms -> 17.903ms` (**-9.60%**), p95 `45.471ms -> 49.311ms` (**-8.44%**), p99 `51.775ms -> 55.967ms` (**-8.10%**), errors `0 -> 0`
+   - **100 RPS**: p50 `17.215ms -> 18.079ms` (**-5.02%**), p95 `47.007ms -> 50.335ms` (**-7.08%**), p99 `53.951ms -> 58.559ms` (**-8.54%**), errors `0 -> 0`
+5. **In scope**: YES. The tested path is `getTransactions` over DB-backed ledger metadata.
+6. **Benchmark methodology**: CORRECT. I built baseline and optimized worktrees from `HEAD`, applied only the lazy-decode change plus the required `ORDER BY` fix in the optimized tree, ran `make -j8 build-stellar-rpc` and `make go-test` in both trees, used `stellar-rpc-blaster` with one shared generated seed file, and compared runs on the same host against the same local RPC port.
+7. **Alternative explanations**: MORE PLAUSIBLE THAN THE CLAIMED WIN. The new path materializes `[][]byte` from SQLite, partially decodes every header in the batch, and then fully decodes the ledgers it actually uses. That extra bookkeeping appears to outweigh any savings from skipping full decode of the unused tail ledgers for this workload.
+8. **Novelty**: IRRELEVANT TO VERDICT. Even if the idea is novel, the measured result does not support promotion to a success.
+
+### Rejection Reason
+
+The optimization claim is not supported by independent benchmarking. On the project’s required `stellar-rpc-blaster` workflow, the optimized variant is consistently slower at matched load (75 and 100 RPS) and shows no latency or throughput improvement.
+
+### Failed Checks
+
+- 4
