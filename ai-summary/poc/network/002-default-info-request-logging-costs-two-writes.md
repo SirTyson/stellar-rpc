@@ -78,3 +78,27 @@ This is distinct from H001 (which covers the `json.Marshal(response)` waste in `
 - **Change description**: Downgrade both `logger.Info(...)` calls to `logger.Debug(...)` in `logRequest` and `logResponse`. Alternatively, gate the entire `logRequest`/`logResponse` invocation behind a logger level check (e.g., `if logger.entry.Logger.IsLevelEnabled(logrus.DebugLevel)`) to skip all field assembly and allocation when not needed. A third option is to keep the Info writes but use sampling (e.g., log every Nth request) for high-volume methods.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/` that exercise JSON-RPC handlers should still pass since logging is observational. Check that no test asserts on Info-level log output from request/response logging.
 - **Benchmark focus**: Measure RPS and p99 latency of `getTransactions` under high concurrency (100+ goroutines) at `--log-level info`. Compare baseline (two Info writes) vs. modified (Debug-only or gated writes). Expect <5% RPS improvement from this change alone. For maximum effect, combine with H001's `json.Marshal` fix.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/jsonrpc.go:82-109` (decorateHandlers): Gated both `logRequest()` and `logResponse()` calls behind the existing `debugEnabled` flag. At the default Info level, these functions are now entirely skipped — no function call, no field assembly, no allocations, no mutex acquisitions, no I/O.
+
+- `cmd/stellar-rpc/internal/jsonrpc.go:115-127` (logRequest): Downgraded `logger.Info("starting JSONRPC request")` to `logger.Debug(...)` for consistency since the function is now only called at debug level.
+
+- `cmd/stellar-rpc/internal/jsonrpc.go:129-147` (logResponse): Downgraded `logger.Info("finished JSONRPC request")` to `logger.Debug(...)`. Removed the `debugEnabled` parameter since the caller already gates the invocation — the `json.Marshal` response body logging now executes unconditionally within the function (it's only reached when debug is enabled anyway).
+
+### Demonstration
+
+At the default `--log-level info`, every JSON-RPC request now skips both `logRequest` and `logResponse` entirely, eliminating ~5 heap allocations, 6 global mutex acquisitions, and 2 synchronous I/O writes per request. Operators who need per-request tracing can enable it via `--log-level debug`, which restores full request/response logging. This removes a serialization bottleneck that affects all RPC methods sharing the same logger mutex under high concurrency.
+
+### Test Results
+
+All 12 Go test packages in `cmd/stellar-rpc/internal/...` pass with `-race` (config, db, feewindow, ingest, integrationtest, ledgerbucketwindow, methods, network, preflight, rpcdatastore, util, xdr2json). All 3 Rust test cases pass. No test breakage from the change since no tests assert on Info-level request/response log output.
