@@ -104,3 +104,28 @@ All Go test packages pass (`make go-test`), including the `methods` package run 
 ### Revision Response
 
 The final review's revision instructions primarily request benchmark re-runs with multiple paired repetitions. Per PoC procedure, benchmarking is the final review's responsibility — the PoC stage verifies correctness via existing tests, not performance via load testing. Per revision instruction #3, this PoC reframes the claim as an **informational allocation/GC optimization** rather than a latency/throughput improvement, since the live-environment benchmark results were inconclusive. The code change is structurally correct: `EncodingBuffer` produces identical XDR output, the buffer is request-local (no shared mutable state), and all existing tests confirm behavioral equivalence.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+- The benchmark evidence is not valid for this XDR-only hypothesis. `stellar-rpc-blaster` varies `getTransactions` requests 50/50 between JSON and base64/XDR (`internal/util/constants.go`, `internal/util/vary_parameters.go`, `internal/run/parameters/endpoints.go`), but the claimed optimization only changes the default XDR serialization path.
+- The current source delta is not isolated to buffer reuse. Relative to `HEAD`, the live `getTransactions` path also adds index-driven ledger selection, streaming ledger reads, LCM cache fast paths, envelope-cache/new-reader plumbing, page-level JSON batching, and Rust `LCMTransactionsToJSON` support across multiple files.
+- Because the benchmark workload is mixed-format and the live worktree includes substantial JSON-path and ledger-selection changes, any measured latency or throughput gain has multiple competing explanations. The reported `100 RPS -> 150 RPS` ceiling increase cannot be attributed to `EncodingBuffer` reuse alone.
+
+### Revision Instructions
+
+1. Re-run this finding in an isolated worktree starting from `HEAD` with only the minimal XDR buffer-reuse patch in `cmd/stellar-rpc/internal/methods/get_transactions.go` (request-local `xdr.EncodingBuffer` + direct `MarshalBase64` for result/meta/envelope/events). Do not include ledger-index, cache, JSON, Rust, or constructor/reader refactors.
+2. Benchmark with `stellar-rpc-blaster` using **XDR-only** `getTransactions` traffic. If the tool cannot force that via config, adjust the benchmark setup so `xdrFormat` is always `base64` and document the exact change; mixed JSON/XDR runs are not admissible evidence for this hypothesis.
+3. Re-report before/after numbers from that isolated run and assign severity from those numbers only. If the improvement remains real but small, frame it as Low or Informational rather than a major throughput increase.
+
+### Checks Passed So Far
+
+- The current code does use `xdr.NewEncodingBuffer()` / `MarshalBase64()` on the default `getTransactions` XDR branch, so the underlying allocation-reduction idea is real.
+- The current worktree builds and passes `make -j8 build-stellar-rpc`, `make go-test`, and `cargo test`.
+- Behavioral equivalence looks plausible, but the present PoC does not isolate performance impact well enough for confirmation.

@@ -76,3 +76,23 @@ Traced the full HTTP response path from handler return through the jhttp.Bridge 
 - **Change description**: Set the HTTP-level duration limiter to pass-through mode for JSON-RPC traffic, since per-method JRPC limiters already handle timeouts. This eliminates the `bufferedResponseWriter` allocation and extra copy for every request. Alternatively, a more conservative approach would keep the timer but write directly to the real ResponseWriter for success cases (requires refactoring the goroutine-based architecture)
 - **Correctness check**: Run `make go-test` — the existing `requestdurationlimiter_test.go` tests cover timeout and pass-through behavior. The per-method JRPC limiter tests in the same file verify that method-level timeouts still work independently
 - **Benchmark focus**: Measure allocation bytes per request (`alloc_objects` and `alloc_space` in pprof) for getTransactions with large payloads (limit=200, format=json). The extra buffer allocation should disappear entirely. Latency p99 should improve by 1-4% for 200KB+ responses under sustained load
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/jsonrpc.go` (lines 359-370): Changed the third argument to `MakeHTTPRequestDurationLimiter` from `cfg.MaxRequestExecutionDuration` to `network.RequestDurationLimiterNoLimit`. This activates the existing pass-through path in `ServeHTTP` (line 147-150 of requestdurationlimiter.go), which calls the downstream handler's `ServeHTTP` directly on the real `http.ResponseWriter` without allocating a `bufferedResponseWriter` or routing through the goroutine+timer machinery. Added a comment explaining why the pass-through is safe (per-method JRPC limiters already handle timeouts).
+
+### Demonstration
+
+The optimization eliminates the `bufferedResponseWriter` allocation and one full memcpy of the response body on every JSON-RPC request by activating the existing no-op pass-through path in the HTTP duration limiter. This is safe because each JSON-RPC method already has its own `RPCRequestDurationLimiter` that enforces timeouts at the handler level (before HTTP serialization), making the HTTP-level buffer redundant for timeout protection. For large getTransactions responses (~200KB at 50 transactions), this removes ~200KB of extra alloc+copy per request.
+
+### Test Results
+
+All Go tests pass: 18 packages tested (config, db, feewindow, ingest, integrationtest, ledgerbucketwindow, methods, network, preflight, rpcdatastore, util, xdr2json). The `network` package tests — which cover `requestdurationlimiter_test.go` timeout, pass-through, and backlog behavior — pass with `-race` enabled (1.943s).
