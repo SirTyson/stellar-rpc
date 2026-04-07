@@ -77,3 +77,29 @@ The `constrainLabels` fast path (vec.go:665-668) returns immediately when no lab
   2. **Switch to HistogramVec**: Replace the `SummaryVec` (line 74) with `HistogramVec` using appropriate duration buckets (e.g., `prometheus.DefBuckets` or custom buckets tuned for RPC latencies). This eliminates the `bufMtx` mutex in `Observe()` and replaces it with lock-free atomic increments.
 - **Correctness check**: The existing `TestDecorateHandlers` and any integration tests exercising JSON-RPC endpoints should continue passing. Metric name and label schema will change if switching to Histogram, so any Grafana dashboards or alerting rules would need updating (out of scope for correctness but worth noting).
 - **Benchmark focus**: Measure per-request allocation count and wrapper function CPU time (not end-to-end getTransactions latency, which will be dominated by DB/serialization). Use `go test -bench -benchmem` targeting the decorator closure. Expect to see 1-2 fewer allocations per request and ~100-300ns improvement in wrapper-only microbenchmarks. End-to-end RPS improvement is expected to be <1%.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/jsonrpc.go:48`** — Hoisted the `strings.NewReplacer` to a package-level `prometheusLabelReplacer` variable. Previously allocated inline on every error-path request (line 99); now shared and allocation-free at call time.
+
+2. **`cmd/stellar-rpc/internal/jsonrpc.go:77-84`** — Replaced `prometheus.NewSummaryVec` (with 3 quantile objectives and per-observation mutex) with `prometheus.NewHistogramVec` using `prometheus.DefBuckets`. Histogram `Observe()` uses lock-free `atomic.AddUint64` on bucket counters instead of the Summary's `bufMtx` mutex.
+
+3. **`cmd/stellar-rpc/internal/jsonrpc.go:88`** — Pre-bind the success-path observer via `requestMetric.WithLabelValues(endpoint, "ok")` at handler registration time (once per endpoint). This eliminates the per-request `prometheus.Labels` map allocation (~100 bytes) and the hash-based label lookup on the hot path.
+
+4. **`cmd/stellar-rpc/internal/jsonrpc.go:97-111`** — Replaced the `prometheus.Labels` map-based status tracking with a simple `status` string variable. On the "ok" path, uses the pre-bound `okObserver` directly; on error paths, uses `WithLabelValues()` (variadic, no map allocation) instead of `With(prometheus.Labels{...})`.
+
+### Demonstration
+
+The optimization eliminates three sources of per-request overhead in the JSON-RPC metrics wrapper: (1) the `prometheus.Labels` map allocation on every request, (2) the label hashing and RLock-based metric lookup via `MetricVec.GetMetricWith`, and (3) the `bufMtx` mutex contention in `summary.Observe()` — replaced with lock-free atomic bucket increments in `histogram.Observe()`. The pre-bound "ok" observer bypasses both allocation and lookup entirely for successful requests, which represent the vast majority of traffic.
+
+### Test Results
+
+All 12 Go test packages in `cmd/stellar-rpc/internal/...` pass with `-race` enabled. All Rust tests pass (1 test in ffi crate). Build completes cleanly with no warnings.
