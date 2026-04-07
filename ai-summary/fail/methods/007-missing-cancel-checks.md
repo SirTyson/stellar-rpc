@@ -98,3 +98,32 @@ The optimization threads the request context into the per-transaction processing
 ### Test Results
 
 All unit tests in `cmd/stellar-rpc/internal/methods/` pass (including all 8 `TestGetTransactions_*` tests covering default limits, custom limits, cursor pagination, JSON format, error cases, and empty results). Tests run with `-race` enabled and complete in ~1.5s.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Exercises claimed inefficiency**: YES. `requestdurationlimiter.go:251-282` cancels the request context on timeout and returns `-32001`, while `get_transactions.go:112-115` and `247-250` now only add `ctx.Err()` checks after that cancellation path exists.
+2. **Realistic preconditions**: LIMITED. The optimization only matters once `getTransactions` requests are already timing out or disconnecting; it does not affect normal successful requests.
+3. **Inefficiency vs by-design**: INEFFICIENCY. The pre-patch code could keep serializing transactions after cancellation.
+4. **Final severity**: NOT SUPPORTED. Using `stellar-rpc-blaster` with the project flow and an isolated baseline that preserved the unrelated JSON/FFI worktree changes, both variants had the same zero-error throughput ceiling: 200 RPS. At 300 RPS the baseline produced 98 timeout errors, while the optimized variant produced 145; at 400 RPS the baseline produced 131 errors, while the optimized variant produced 287.
+5. **In scope**: YES. The change is in the `getTransactions` handler.
+6. **Benchmark methodology**: CORRECT. I built both variants, used the project's blaster, reused the same seed data, and isolated the review to the cancel-check delta because the live worktree also contained unrelated `json.go` / `xdr2json` performance edits.
+7. **Alternative explanations**: PRESENT. The only zero-error latency improvement was at 200 RPS (`p50` 29.999ms -> 27.919ms), but the same change was slower at 100 RPS (`p50` 14.727ms -> 15.455ms). Because the added `ctx.Err()` checks only run differently after cancellation, any apparent improvement during zero-error successful runs is measurement noise rather than evidence for this optimization.
+8. **Novelty**: PASS.
+
+### Rejection Reason
+
+The fix addresses a real inefficiency, but the performance claim is not supported by the required benchmark. The maximum zero-error throughput stayed flat at 200 RPS, and once timeout-driven cancellation started at 300+ RPS the optimized variant was not better and was often worse.
+
+### Failed Checks
+
+- 4
+- 7

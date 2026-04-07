@@ -79,3 +79,31 @@ The `decorateHandlers` closure in `jsonrpc.go:83-104` wraps every JSON-RPC metho
   2. **Cleaner (minor upstream change)**: Add `func (e *Entry) IsLevelEnabled(level logrus.Level) bool` to `go-stellar-sdk/support/log/entry.go`, then guard the block with `if logger.IsLevelEnabled(logrus.DebugLevel)`.
 - **Correctness check**: Existing tests for `getTransactions` should continue to pass since this only affects debug logging output. No behavioral change for the response itself.
 - **Benchmark focus**: Measure allocations per `getTransactions` request (bytes allocated, allocs/op) and p50/p99 latency with `format=json` and `limit=200` at the default info log level. Expect ~50% reduction in marshal-related allocations and a measurable latency improvement proportional to response size.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+- **`cmd/stellar-rpc/internal/jsonrpc.go:74`** — Added `debugEnabled bool` parameter to `decorateHandlers` function signature. This flag is captured by the handler closure and passed through to `logResponse`.
+
+- **`cmd/stellar-rpc/internal/jsonrpc.go:103`** — Updated `logResponse` call to pass the `debugEnabled` flag.
+
+- **`cmd/stellar-rpc/internal/jsonrpc.go:125-143`** — Modified `logResponse` to accept `debugEnabled bool` parameter. The `json.Marshal` + `string()` block is now gated by `debugEnabled &&` before the `status == "ok"` check, so at the default `info` log level, neither the marshal nor the byte-to-string copy execute.
+
+- **`cmd/stellar-rpc/internal/jsonrpc.go:20`** — Added `"github.com/sirupsen/logrus"` import for the `logrus.DebugLevel` constant.
+
+- **`cmd/stellar-rpc/internal/jsonrpc.go:326-329`** — Updated the `decorateHandlers` call in `NewJSONRPCHandler` to pass `cfg.LogLevel >= logrus.DebugLevel`, computing the debug-enabled flag once at handler setup time from the config.
+
+### Demonstration
+
+The optimization eliminates an unconditional `json.Marshal(response)` + `string(responseBytes)` that executed on every successful JSON-RPC request, even when the resulting debug log message was always discarded at the default `info` log level. By computing a `debugEnabled` flag once at handler construction time from `cfg.LogLevel`, the entire marshal + byte-to-string copy block is skipped for all requests when running at `info` level or above, removing one full duplicate serialization pass and its associated allocations from the hot path.
+
+### Test Results
+
+All 16 Go test packages in `cmd/stellar-rpc/internal/...` pass (with `-race`), including config, db, feewindow, ingest, integrationtest, ledgerbucketwindow, methods, network, preflight, rpcdatastore, util, and xdr2json.
