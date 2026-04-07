@@ -58,6 +58,42 @@ func ConvertInterface(xdr encoding.BinaryMarshaler) (json.RawMessage, error) {
 	return convertAnyBytes(xdrTypeName, data)
 }
 
+// ConvertBytesSlice converts a homogeneous slice of XDR byte buffers to JSON,
+// amortizing type name extraction and C string allocation across all items.
+func ConvertBytesSlice(xdr interface{}, fields [][]byte) ([]json.RawMessage, error) {
+	result := make([]json.RawMessage, len(fields))
+	if len(fields) == 0 {
+		return result, nil
+	}
+
+	xdrTypeName := reflect.TypeOf(xdr).Name()
+	cTypeName := C.CString(xdrTypeName)
+	defer C.free(unsafe.Pointer(cTypeName))
+
+	for i, field := range fields {
+		if len(field) == 0 {
+			result[i] = json.RawMessage("")
+			continue
+		}
+
+		goRawXdr := CXDR(field)
+		cResult := C.xdr_to_json(cTypeName, goRawXdr)
+
+		jsonStr := C.GoString(cResult.json)
+		errStr := C.GoString(cResult.error)
+
+		C.free_conversion_result(cResult)
+		FreeGoXDR(goRawXdr)
+
+		if errStr != "" {
+			return result, errors.New(errStr)
+		}
+		result[i] = json.RawMessage(jsonStr)
+	}
+
+	return result, nil
+}
+
 func convertAnyBytes(xdrTypeName string, field []byte) (json.RawMessage, error) {
 	var jsonStr, errStr string
 	goRawXdr := CXDR(field)

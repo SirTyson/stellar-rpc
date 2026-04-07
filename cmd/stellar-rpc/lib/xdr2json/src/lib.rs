@@ -7,6 +7,11 @@ use stellar_xdr::curr as xdr;
 
 use anyhow::Result;
 
+#[cfg(test)]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 // We really do need everything.
 #[allow(clippy::wildcard_imports)]
 use ffi::*;
@@ -35,6 +40,58 @@ pub struct ConversionResult {
 struct RustConversionResult {
     json: String,
     error: String,
+}
+
+#[cfg(test)]
+struct CountingAllocator;
+
+#[cfg(test)]
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+#[cfg(test)]
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new_ptr = unsafe { System.realloc(ptr, layout, new_size) };
+        if !new_ptr.is_null() && TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATED_BYTES.fetch_add(new_size, Ordering::Relaxed);
+        }
+        new_ptr
+    }
+}
+
+#[cfg(test)]
+fn measure_allocated_bytes<R>(f: impl FnOnce() -> R) -> (usize, R) {
+    ALLOCATED_BYTES.store(0, Ordering::Relaxed);
+    TRACK_ALLOCATIONS.store(true, Ordering::Relaxed);
+    let result = f();
+    TRACK_ALLOCATIONS.store(false, Ordering::Relaxed);
+    (ALLOCATED_BYTES.load(Ordering::Relaxed), result)
 }
 
 /// Takes in a string name of an XDR type in the Stellar Protocol (i.e. from the
@@ -69,8 +126,12 @@ pub unsafe extern "C" fn xdr_to_json(
             Err(e) => panic!("couldn't match type {type_str}: {e}"),
         };
 
-        let xdr_bytearray = unsafe { from_c_xdr(xdr) };
-        let mut buffer = xdr::Limited::new(xdr_bytearray.as_slice(), DEFAULT_XDR_RW_LIMITS.clone());
+        // Borrow the C-allocated buffer directly instead of cloning via from_c_xdr().
+        // Safety: the Go caller keeps the C buffer alive for the entire duration of
+        // this FFI call (FreeGoXDR is deferred until after xdr_to_json returns), and
+        // this closure executes synchronously inside catch_json_to_xdr_panic.
+        let xdr_slice = unsafe { std::slice::from_raw_parts(xdr.xdr, xdr.len) };
+        let mut buffer = xdr::Limited::new(xdr_slice, DEFAULT_XDR_RW_LIMITS.clone());
 
         let t = match xdr::Type::read_xdr_to_end(the_type, &mut buffer) {
             Ok(t) => t,
@@ -137,5 +198,70 @@ fn catch_json_to_xdr_panic(
             json: "{}".to_string(),
             error: format!("{e:?}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::convert::TryInto;
+
+    use xdr::WriteXdr;
+
+    fn make_large_diagnostic_event(payload_size: usize) -> xdr::DiagnosticEvent {
+        let contract_id = xdr::ContractId(xdr::Hash::try_from(vec![0xAB; 32]).unwrap());
+        let topic: xdr::ScSymbol = b"PAYLOAD".to_vec().try_into().unwrap();
+        let payload: xdr::ScBytes = vec![0xCD; payload_size].try_into().unwrap();
+
+        xdr::DiagnosticEvent {
+            in_successful_contract_call: true,
+            event: xdr::ContractEvent {
+                ext: xdr::ExtensionPoint::V0,
+                contract_id: Some(contract_id),
+                type_: xdr::ContractEventType::Diagnostic,
+                body: xdr::ContractEventBody::V0(xdr::ContractEventV0 {
+                    topics: vec![xdr::ScVal::Symbol(topic)].try_into().unwrap(),
+                    data: xdr::ScVal::Bytes(payload),
+                }),
+            },
+        }
+    }
+
+    fn convert_diagnostic_event_json(input: &[u8], clone_input: bool) -> String {
+        let parsed = if clone_input {
+            let owned = input.to_vec();
+            let mut buffer = xdr::Limited::new(owned.as_slice(), DEFAULT_XDR_RW_LIMITS.clone());
+            xdr::Type::read_xdr_to_end(xdr::TypeVariant::DiagnosticEvent, &mut buffer).unwrap()
+        } else {
+            let mut buffer = xdr::Limited::new(input, DEFAULT_XDR_RW_LIMITS.clone());
+            xdr::Type::read_xdr_to_end(xdr::TypeVariant::DiagnosticEvent, &mut buffer).unwrap()
+        };
+
+        serde_json::to_string(&parsed).unwrap()
+    }
+
+    #[test]
+    fn borrowed_slice_avoids_extra_clone_for_large_diagnostic_event() {
+        let event = make_large_diagnostic_event(4 << 20);
+        let input = event.to_xdr(DEFAULT_XDR_RW_LIMITS.clone()).unwrap();
+
+        // Warm both paths so one-time allocations in dependencies do not skew the proof.
+        let borrowed_json = convert_diagnostic_event_json(&input, false);
+        let cloned_json = convert_diagnostic_event_json(&input, true);
+        assert_eq!(borrowed_json, cloned_json);
+
+        let (borrowed_allocated, borrowed_json) =
+            measure_allocated_bytes(|| convert_diagnostic_event_json(&input, false));
+        let (cloned_allocated, cloned_json) =
+            measure_allocated_bytes(|| convert_diagnostic_event_json(&input, true));
+
+        assert_eq!(borrowed_json, cloned_json);
+        assert!(
+            cloned_allocated >= borrowed_allocated + (input.len() / 2),
+            "expected cloned path to allocate materially more than borrowed path: input={}, borrowed={}, cloned={}",
+            input.len(),
+            borrowed_allocated,
+            cloned_allocated
+        );
     }
 }

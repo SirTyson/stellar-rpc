@@ -36,6 +36,7 @@ type LedgerReaderTx interface {
 	GetLedger(ctx context.Context, sequence uint32) (xdr.LedgerCloseMeta, bool, error)
 	GetLedgerRange(ctx context.Context) (ledgerbucketwindow.LedgerRange, error)
 	BatchGetLedgers(ctx context.Context, start uint32, end uint32) ([]LedgerMetadataChunk, error)
+	BatchGetLedgerMetas(ctx context.Context, start uint32, end uint32) ([]xdr.LedgerCloseMeta, error)
 	Done() error
 }
 
@@ -112,6 +113,30 @@ func (l ledgerReaderTx) BatchGetLedgers(
 	}
 
 	return batch, nil
+}
+
+// BatchGetLedgerMetas fetches a contiguous range of fully deserialized LedgerCloseMeta
+// in a single SQL query. The returned slice is ordered by sequence ascending.
+func (l ledgerReaderTx) BatchGetLedgerMetas(
+	ctx context.Context,
+	start, end uint32,
+) ([]xdr.LedgerCloseMeta, error) {
+	if start > end {
+		return nil, errors.New("start must be <= end")
+	}
+	query := sq.Select("meta").
+		From(ledgerCloseMetaTableName).
+		Where(sq.And{
+			sq.GtOrEq{"sequence": start},
+			sq.LtOrEq{"sequence": end},
+		}).
+		OrderBy("sequence ASC")
+
+	var results []xdr.LedgerCloseMeta
+	if err := l.tx.Select(ctx, &results, query); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // GetLedger fetches a single ledger from the db using a transaction.

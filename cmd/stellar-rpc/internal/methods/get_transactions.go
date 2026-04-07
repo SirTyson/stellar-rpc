@@ -68,25 +68,6 @@ func (h transactionsRPCHandler) initializePagination(request protocol.GetTransac
 	return *start, limit, nil
 }
 
-// fetchLedgerData calls the meta table to fetch the corresponding ledger data.
-func (h transactionsRPCHandler) fetchLedgerData(ctx context.Context, ledgerSeq uint32,
-	readTx db.LedgerReaderTx,
-) (xdr.LedgerCloseMeta, error) {
-	ledger, found, err := readTx.GetLedger(ctx, ledgerSeq)
-	if err != nil {
-		return ledger, &jrpc2.Error{
-			Code:    jrpc2.InternalError,
-			Message: err.Error(),
-		}
-	} else if !found {
-		return ledger, &jrpc2.Error{
-			Code:    jrpc2.InvalidParams,
-			Message: fmt.Sprintf("database does not contain metadata for ledger: %d", ledgerSeq),
-		}
-	}
-	return ledger, nil
-}
-
 // processTransactionsInLedger cycles through all the transactions in a ledger, extracts the transaction info
 // and builds the list of transactions.
 //
@@ -252,24 +233,60 @@ func (h transactionsRPCHandler) getTransactionsByLedgerSequence(ctx context.Cont
 
 	// Iterate through each ledger and its transactions until limit or end range is reached.
 	// The latest ledger acts as the end ledger range for the request.
+	// Ledgers are fetched in batches to reduce the number of SQL queries.
+	const batchSize = 50
 	txns := make([]protocol.TransactionInfo, 0, limit)
 	var done bool
 	cursor := toid.New(0, 0, 0)
-	for ledgerSeq := start.LedgerSequence; ledgerSeq <= int32(ledgerRange.LastLedger.Sequence); ledgerSeq++ {
-		if ledgerSeq < 0 {
+	lastLedgerSeq := int32(ledgerRange.LastLedger.Sequence)
+
+	for batchStart := start.LedgerSequence; batchStart <= lastLedgerSeq; batchStart += batchSize {
+		if batchStart < 0 {
 			return protocol.GetTransactionsResponse{}, &jrpc2.Error{
 				Code:    jrpc2.InvalidParams,
 				Message: "cursor ledger sequence cannot be negative",
 			}
 		}
-		ledger, err := h.fetchLedgerData(ctx, uint32(ledgerSeq), readTx)
-		if err != nil {
-			return protocol.GetTransactionsResponse{}, err
+
+		batchEnd := batchStart + batchSize - 1
+		if batchEnd > lastLedgerSeq {
+			batchEnd = lastLedgerSeq
 		}
 
-		cursor, done, err = h.processTransactionsInLedger(ledger, start, &txns, limit, request.Format)
+		ledgers, err := readTx.BatchGetLedgerMetas(ctx, uint32(batchStart), uint32(batchEnd))
 		if err != nil {
-			return protocol.GetTransactionsResponse{}, err
+			return protocol.GetTransactionsResponse{}, &jrpc2.Error{
+				Code:    jrpc2.InternalError,
+				Message: err.Error(),
+			}
+		}
+
+		// Verify we got all expected ledgers in the range
+		expectedCount := int(batchEnd - batchStart + 1)
+		if len(ledgers) != expectedCount {
+			// Find the first missing ledger for the error message
+			ledgerMap := make(map[uint32]bool, len(ledgers))
+			for _, l := range ledgers {
+				ledgerMap[l.LedgerSequence()] = true
+			}
+			for seq := uint32(batchStart); seq <= uint32(batchEnd); seq++ {
+				if !ledgerMap[seq] {
+					return protocol.GetTransactionsResponse{}, &jrpc2.Error{
+						Code:    jrpc2.InvalidParams,
+						Message: fmt.Sprintf("database does not contain metadata for ledger: %d", seq),
+					}
+				}
+			}
+		}
+
+		for _, ledger := range ledgers {
+			cursor, done, err = h.processTransactionsInLedger(ledger, start, &txns, limit, request.Format)
+			if err != nil {
+				return protocol.GetTransactionsResponse{}, err
+			}
+			if done {
+				break
+			}
 		}
 		if done {
 			break
