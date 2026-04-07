@@ -106,3 +106,28 @@ The optimization reduces event JSON conversion from 3×N `ConvertBytesSlice` CGo
 ### Test Results
 
 All 17 Go test packages pass (including `methods`, `db`, `xdr2json`, and all others under `cmd/stellar-rpc/internal/...`). All 2 Rust tests pass. Build succeeds cleanly with `make build-stellar-rpc`.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+- The current landing is not isolated to H003. In addition to page-wide event batching in `batchConvertTransactionsToJSON`, it also includes page-wide batching of core transaction fields, transaction-index-driven ledger selection (`GetLedgerSequencesWithTransactions`), a custom cached ledger transaction reader (`ledger_transaction_reader.go` / `envelope_cache.go`), and other supporting performance changes. The measured benchmark delta therefore does **not** demonstrate H003 specifically.
+- Independent benchmarking on the same DB copy and seed file showed a much larger gain than the PoC's event-only theory can explain. At **100 RPS**, p50 fell from **18.223 ms** to **5.039 ms** (**72.35%**), p95 from **50.879 ms** to **15.879 ms** (**68.79%**), and p99 from **58.303 ms** to **18.047 ms** (**69.05%**). The error-free ceiling under the objective's p50-step rule also rose from **100 RPS** to **at least 200 RPS**. That is far beyond the ~0.5 ms/page savings argued for eliminating per-transaction event `ConvertBytesSlice` calls.
+- The benchmark profile in `rpc-blaster-status.md` for this finding does not match independent reproduction in the current environment. Here, unmodified `HEAD` already violates the objective's p50 step-up rule at **150 RPS**, so the H003 write-up cannot claim the broader 500-700 RPS result as evidence for this event-only finding.
+
+### Revision Instructions
+
+1. Re-run H003 as an **isolated delta** on top of a control that already contains the non-H003 optimizations, or temporarily disable the non-H003 changes so the only benchmarked difference is page-wide event JSON batching.
+2. Keep the benchmark methodology the same (same DB snapshot, same seed file, same blaster config), but report before/after numbers for that isolated delta at a stable load such as **100 RPS** and **150 RPS**.
+3. Narrow the write-up to event batching only. If you want to claim the much larger observed speedup, open or update a broader finding that explicitly covers the index-driven ledger skip path, custom ledger transaction reader/envelope cache, and core-field batching.
+
+### Checks Passed So Far
+
+- Build/test validation passed on the current tree: `make -j8 build-stellar-rpc`, `make go-test`, and `cargo test`.
+- Code inspection confirms that page-wide event batching is present in `cmd/stellar-rpc/internal/methods/json.go:105-210` and reconstructs per-transaction / per-operation shapes via explicit offsets.
+- The independent benchmark setup was controlled: baseline `HEAD` and the current tree were run against the same local futurenet DB copy, the same generated seed file, and the same `stellar-rpc-blaster` config. Baseline ceiling was **100 RPS**; the current tree stayed within the objective's p50 step-up rule through **200 RPS**.
