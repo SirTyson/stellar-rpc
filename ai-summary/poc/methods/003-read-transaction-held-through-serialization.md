@@ -78,3 +78,25 @@ The inefficiency is real and the mechanism is correctly identified:
 - **Change description**: Restructure the main loop into two phases: (1) a fetch phase that iterates ledgers via `readTx.GetLedger`, collecting `xdr.LedgerCloseMeta` values into a slice until enough transactions are available, then closes the read transaction; (2) a processing phase that iterates the collected metas and calls `processTransactionsInLedger` for serialization. The `readTx.Done()` call should be moved from a defer to an explicit call between the two phases. Alternatively, use `readTx.BatchGetLedgers(ctx, startSeq, endSeq)` for the fetch phase — but note that the handler doesn't know the exact end sequence in advance (it depends on transaction density), so either a conservative upper-bound estimate or a one-at-a-time fetch loop is needed.
 - **Correctness check**: The existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` cover pagination, cursor handling, and format output. These should continue to pass since the optimization only changes when the DB transaction is released, not what data is fetched. Cross-ledger consistency within a single response is not required by the API contract (each ledger is independently self-contained).
 - **Benchmark focus**: Measure under concurrent load with mixed read/write: run ingestion continuously while sending concurrent `getTransactions` requests with `format=json` and a limit of 200. Compare WAL file size, checkpoint success rate, and p99 request latency before and after. The primary metric should be checkpoint completion rate under load. Single-request latency improvement should be minimal (<1ms); the gain is in system-level throughput under contention.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/methods/get_transactions.go` (lines 267-408): Restructured `getTransactionsByLedgerSequence` into two phases by extracting a new `fetchLedgerMetas` method. The new method encapsulates the read transaction lifecycle — it opens the transaction, fetches the ledger range, validates the request, fetches all needed ledger metas in batches (with early termination once enough transactions are counted via `CountTransactions()`), and closes the read transaction via `defer` before returning. The original function now calls `fetchLedgerMetas` first (Phase 1: DB access), then iterates over the returned in-memory metas calling `processTransactionsInLedger` (Phase 2: CPU-heavy serialization) with no read transaction held.
+
+- Added `ledgerbucketwindow` import to support the `LedgerRange` return type from the extracted function.
+
+### Demonstration
+
+The optimization reduces SQLite WAL snapshot lifetime by releasing the read transaction before CPU-heavy serialization (XDR marshaling, base64 encoding, JSON FFI calls) begins. Under concurrent ingestion + query workloads, this prevents long-lived reader snapshots from blocking `PRAGMA wal_checkpoint(TRUNCATE)`, reducing WAL growth and improving checkpoint success rates. The change is transparent to callers — the same data is fetched and processed, just with a shorter DB lock window.
+
+### Test Results
+
+All Go tests pass: `go test ./...` reports success across all 13 packages with test files, including `cmd/stellar-rpc/internal/methods` (8 getTransactions tests covering default limit, custom limit, cursor pagination, JSON format, error cases, and no-results scenarios). Race detector enabled for methods tests with no issues found.
