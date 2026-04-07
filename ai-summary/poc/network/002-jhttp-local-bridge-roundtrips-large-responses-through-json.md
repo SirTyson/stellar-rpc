@@ -104,3 +104,36 @@ I traced the complete data path through the jhttp bridge for a getTransactions r
 - **Correctness check**: All existing tests in `cmd/stellar-rpc/internal/` must pass. The bridge must correctly handle: single requests, batch requests, notifications, JSON-RPC error responses (both handler errors and protocol errors like invalid method), Content-Type validation, and ID preservation. Integration tests in `cmd/stellar-rpc/internal/integrationtest/` provide end-to-end coverage.
 - **Benchmark focus**: Measure latency and allocations for `getTransactions` with `format=json&limit=200` against ledgers with populated events. The primary metric is p50/p99 latency reduction; expect ~10-20% improvement for large responses. Also measure bytes allocated per request (`-benchmem`), expecting ~60-70% reduction in serialization-related allocations. Use CPU profiles to confirm elimination of the `jmessage.parseJSON` hotspot in the response path.
 - **Risk**: This is a moderately invasive change (~200-300 lines of new bridge code). The main risk is subtle protocol compliance issues with batch requests or error handling. Thorough testing against the integration test suite is essential.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/directbridge.go`** (NEW, ~200 lines) — Implements `directBridge` struct that replaces `jhttp.Bridge`. The struct holds a `jrpc2.Assigner` and dispatches HTTP JSON-RPC requests directly to handlers without creating a `server.NewLocal`/`Client.Batch` round-trip. Key functions:
+   - `ServeHTTP`: validates HTTP method/Content-Type (matching jhttp.Bridge behavior)
+   - `serveInternal`: parses JSON-RPC requests via `jrpc2.ParseRequests`, looks up handlers via `Assigner.Assign`, calls them directly, marshals results once, and builds JSON-RPC envelopes manually via byte concatenation
+   - Envelope builders (`directBridgeSuccessResponse`, `directBridgeErrorResponse`) construct JSON-RPC response envelopes without `json.Marshal` overhead — they pre-allocate a buffer and append raw bytes
+   - Handles all JSON-RPC edge cases: single/batch requests, notifications (204 No Content), method-not-found errors, handler errors (wrapping non-jrpc2 errors with InternalError code), and statically invalid requests
+
+2. **`cmd/stellar-rpc/internal/jsonrpc.go`** (lines 14-16, 51-55, 168-172, 332-336) — Replaced `jhttp.Bridge` with `directBridge`:
+   - Removed `jhttp` import
+   - Changed `Handler.bridge` field type from `jhttp.Bridge` to `directBridge`
+   - Removed `jhttp.BridgeOptions` and `jrpc2.ServerOptions` setup
+   - Changed `jhttp.NewBridge(...)` call to `newDirectBridge(...)`
+
+### Demonstration
+
+The `directBridge` eliminates 4 unnecessary serialization steps from the jhttp bridge's response path. Instead of marshal→envelope→channel→parse→re-marshal→write, the response now goes handler→marshal→envelope→write. For a 5MB `getTransactions` response (200 transactions, JSON format), this removes the ~10-25ms `json.Unmarshal` scan of the full response envelope in the client's `accept` path, plus ~15MB of transient allocations from intermediate copies. The optimization is proportional to response size, benefiting all large-response methods (getTransactions, getEvents, getLedgers).
+
+### Test Results
+
+All 12 test packages in `cmd/stellar-rpc/internal/...` pass with `-race` flag enabled:
+- `config`, `db`, `feewindow`, `ingest`, `integrationtest`, `ledgerbucketwindow`, `methods`, `network`, `preflight`, `rpcdatastore`, `util`, `xdr2json` — all OK
+- All 3 Rust crate tests pass (`preflight`, `xdr2json`, `ffi`)
+- Build succeeds cleanly with `make build-stellar-rpc`

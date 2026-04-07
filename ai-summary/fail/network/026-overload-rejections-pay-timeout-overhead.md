@@ -100,3 +100,31 @@ The optimization reorders the middleware stack so that the backlog queue limiter
 ### Test Results
 
 All 18 Go test packages pass, including all network package tests (backlogQ_test.go and requestdurationlimiter_test.go). All Rust tests pass (1 passed). No test failures or regressions introduced by the middleware reorder.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Does the change actually address the claimed inefficiency?** YES — the reordered stack does move both backlog limiters ahead of the duration wrappers, so rejected requests skip timeout-layer timer/context/channel/goroutine setup.
+2. **Are the preconditions realistic?** YES — the effect only matters under queue saturation, but timeout races are realistic because handlers can continue running after the duration limiter returns.
+3. **Is the original code inefficient or working as designed?** INEFFICIENCY — the existing ordering does impose avoidable overhead on rejected requests.
+4. **Does the benchmark improvement match the claimed severity?** NOT ASSESSED — the candidate failed safety review before benchmark results could matter.
+5. **Is the optimization in scope?** YES — the reordered wrappers are in the `getTransactions` request path.
+6. **Is the benchmark methodology correct?** NOT RUN — performance confirmation was blocked by a correctness regression.
+7. **Can the improvement be explained WITHOUT the optimization?** NONE — an isolated composition test showed the changed wrapper order alone causes the behavioral difference.
+8. **Is this optimization novel?** IRRELEVANT — novelty does not overcome the safety regression.
+
+### Rejection Reason
+
+Reordering backlog outside the duration limiter breaks queue accounting. When a timed-out handler keeps running briefly after cancellation, the outer backlog limiter returns immediately and executes its deferred decrement, which frees the slot before the underlying work has actually exited. In an isolated reproduction, the reordered HTTP and JRPC stacks both admitted a second request while the first timed-out handler was still running; the original ordering correctly kept the slot occupied and rejected the second request.
+
+### Failed Checks
+
+- Step 6 (Verify Safety)
