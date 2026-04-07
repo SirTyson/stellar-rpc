@@ -137,3 +137,33 @@ All 12 test packages in `cmd/stellar-rpc/internal/...` pass with `-race` flag en
 - `config`, `db`, `feewindow`, `ingest`, `integrationtest`, `ledgerbucketwindow`, `methods`, `network`, `preflight`, `rpcdatastore`, `util`, `xdr2json` — all OK
 - All 3 Rust crate tests pass (`preflight`, `xdr2json`, `ffi`)
 - Build succeeds cleanly with `make build-stellar-rpc`
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+1. The optimization is real, but the current `directBridge` is not behaviorally identical to `jhttp.Bridge`. For an unknown method, `jhttp`/`jrpc2.Server` returns `{"error":{"code":-32601,"message":"method not found","data":"<method>"}}`, while `directBridgeMethodNotFound` drops the `error.data` field entirely. The PoC's claim that JSON-RPC edge cases are preserved is therefore not yet true.
+2. Batch execution semantics changed. `jhttp.Bridge` routes through `jrpc2.Server`, which can execute batch members concurrently up to the server concurrency limit; `directBridge` runs requests in a simple `for` loop, so batched `getTransactions` calls are serialized. That is a real network-layer regression even though single-request `getTransactions` throughput improves substantially.
+
+### Revision Instructions
+
+1. Preserve upstream `jhttp` / `jrpc2.Server` response semantics exactly for server-generated errors, including the method name in `error.data` for method-not-found replies.
+2. Preserve batch execution behavior. Either keep concurrent execution for batch members in the direct path or prove with parity tests that the replacement matches upstream behavior for batched requests.
+3. Add regression coverage for:
+   - unknown-method HTTP JSON-RPC responses matching `jhttp.Bridge`
+   - batched requests preserving upstream execution behavior
+4. Re-run `make -j8 build-stellar-rpc`, `make go-test`, and the full blaster sweep after the parity fixes.
+
+### Checks Passed So Far
+
+- The inefficiency is real and large. Independent `stellar-rpc-blaster` runs on `getTransactions` showed:
+  - **150 RPS**: p50 `21.567ms -> 8.743ms` (**59.5% lower**), p95 `55.103ms -> 24.511ms` (**55.5% lower**), p99 `69.759ms -> 27.999ms` (**59.8% lower**), errors `0 -> 0`
+  - **Throughput ceiling**: baseline clean ceiling `150 RPS`; optimized implementation sustained **at least 500 RPS** with `0` errors and `10.623ms / 29.935ms / 34.879ms` p50/p95/p99, which is **at least 233.3%** higher throughput than the baseline ceiling
+  - Baseline **200 RPS** was not a valid ceiling because p50 jumped from `21.567ms` to `278.527ms` (>20%)
+- The isolated implementation built successfully and passed the existing Go test suite.
+- The finding remains in scope and novel; the blocker is implementation parity, not absence of measurable impact.
