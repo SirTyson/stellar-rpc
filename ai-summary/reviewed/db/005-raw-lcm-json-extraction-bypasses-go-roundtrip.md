@@ -140,3 +140,32 @@ All existing tests pass:
 - `go test -race ./cmd/stellar-rpc/internal/xdr2json/` — ok (1.017s)
 - `cargo test -p xdr2json` — 1 passed, 0 failed
 - No pre-existing clippy errors in new code (4 pre-existing warnings in existing code remain unchanged)
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The new Rust extractor is not behaviorally equivalent to the existing `getTransactions` path. In `cmd/stellar-rpc/lib/xdr2json/src/lib.rs:477-556`, `extract_transactions_json()` flattens the tx-set envelopes and then pairs `tx_set[i]` with `tx_processing[i]` by index. The canonical SDK reader does **not** do that: `go-stellar-sdk/ingest/ledger_transaction_reader.go:123-149` hashes every envelope first because `LedgerCloseMeta.TransactionEnvelopes()` and `tx_processing` are not guaranteed to be in the same order, and the SDK comment explicitly calls this out.
+
+I reproduced the mismatch independently with a synthetic `LedgerCloseMeta` whose tx-set order differs from processing order: `LCMTransactionsToJSON()` returned the correct hash from `TransactionResultPair`, but the `envelope` JSON for application order 1 belonged to a different transaction (`seq_num` 1 instead of 2). That means the current PoC can return internally inconsistent transaction objects on real ledgers.
+
+There is also a design gap in the FFI surface: `lcm_transactions_to_json(xdr_t lcm_bytes)` does not accept the network passphrase or precomputed network ID, so the Rust side currently lacks the input needed to reproduce the SDK's hash-based envelope/result association safely.
+
+### Revision Instructions
+
+1. Change the Rust extraction logic to mirror the SDK's `LedgerTransactionReader.storeTransactions` behavior instead of zipping envelopes and processing entries by index. The Rust path must associate each `TransactionResultPair.transaction_hash` with the matching envelope by computing envelope hashes, which requires extending the FFI to accept the network passphrase or network ID.
+2. Add a regression test that constructs an LCM where tx-set order and `tx_processing` order differ, and assert that the new Rust path matches the existing Go+Rust pipeline exactly for hash, envelope JSON, result JSON, status, and application order.
+3. Add equivalence coverage for fee-bump transactions and event-bearing Soroban transactions so the new path proves it preserves the current wire format before any performance claims are accepted.
+4. Re-run benchmarks only after the correctness issue above is fixed. I did not accept the benchmark claim because measuring a semantically incorrect path is not meaningful.
+
+### Checks Passed So Far
+
+- The underlying inefficiency is real and still in scope for `getTransactions` JSON responses.
+- The optimized worktree builds successfully with `make -j8 build-stellar-rpc`.
+- Existing tests still pass with `make go-test` and `cargo test`.
+- The raw-byte DB fetch path (`BatchGetLedgersBySequences`) and the Go/Rust FFI plumbing compile and execute; the blocker is the transaction-level envelope/result association, not the overall architectural direction.
