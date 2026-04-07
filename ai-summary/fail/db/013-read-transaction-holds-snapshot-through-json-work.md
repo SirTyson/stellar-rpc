@@ -98,3 +98,32 @@ The optimization releases the SQLite read-only snapshot immediately after all ne
 ### Test Results
 
 All 8 getTransactions unit tests pass (TestGetTransactions_DefaultLimit, TestGetTransactions_DefaultLimitExceedsLatestLedger, TestGetTransactions_CustomLimit, TestGetTransactions_CustomLimitAndCursor, TestGetTransactions_InvalidStartLedger, TestGetTransactions_LedgerNotFound, TestGetTransactions_LimitGreaterThanMaxLimit, TestGetTransactions_InvalidCursorString, TestGetTransactions_JSONFormat, TestGetTransactions_NoResults). All 17 test packages across `cmd/stellar-rpc/internal/...` pass with `-race` enabled.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Exercises claimed inefficiency**: YES — the code change at `get_transactions.go:339-343` releases the read snapshot before `processTransactionsInLedger`, so it directly targets the hypothesized snapshot lifetime.
+2. **Realistic preconditions**: YES — the benchmark kept ingestion active and used the project's `stellar-rpc-blaster` against live `getTransactions` JSON traffic.
+3. **Inefficiency vs by-design**: MIXED — shortening the snapshot is logically safe in this single-batch code path, but the existing behavior is primarily a consistency/simplicity choice, not an obviously expensive hot-path bug.
+4. **Final severity**: REJECTED — independent measurements did not show a consistent or material performance gain. At 100 RPS the optimized build regressed (p50 5.039ms vs 4.843ms, p95 16.111ms vs 15.863ms, p99 18.415ms vs 17.903ms). At 200-300 RPS the optimized build was only 0.3-3.6% faster, and at a controlled 500-RPS recheck from the same frozen DB snapshot it was only 0.7-1.6% faster with effectively identical throughput (11,769 vs 11,773 successful requests, 0 errors on both).
+5. **In scope**: YES — this is a server-side runtime optimization in the targeted `getTransactions` path.
+6. **Benchmark methodology**: CORRECT — built and tested the optimized tree (`make -j8 build-stellar-rpc`, `make go-test`, `cargo test`), generated one shared seed with `stellar-rpc-blaster generate`, ran warm-up plus 100/200/300-RPS sweeps with `stellar-rpc-blaster run`, then ran a 500-RPS recheck on baseline and optimized servers started from the same frozen DB snapshot.
+7. **Alternative explanations**: LIKELY NOISE — the tiny high-load deltas are within normal run-to-run variance, especially because the optimized build is slower at 100 RPS and shows no throughput win.
+8. **Novelty**: PASS — no duplicate was identified during this review.
+
+### Rejection Reason
+
+The optimization claim is not supported by independent benchmarking. The code change does shorten snapshot lifetime, but the measured impact is inconsistent and too small to distinguish from noise, so there is no credible evidence of a real performance win.
+
+### Failed Checks
+
+- 4
+- 7
