@@ -84,3 +84,29 @@ Traced the full `getTransactions` JSON path from `get_transactions.go:162` throu
 - **Target code (Rust side)**: `cmd/stellar-rpc/lib/xdr2json/src/lib.rs:72-73` — replace `from_c_xdr(xdr)` with `slice::from_raw_parts(xdr.xdr, xdr.len)` and pass the slice directly to `Limited::new`.
 - **Correctness check**: Existing xdr2json unit tests and integration tests for `getTransactions` with `format=json` should pass unchanged. Run `go test ./cmd/stellar-rpc/internal/xdr2json/...` and any integration tests exercising the JSON format path.
 - **Benchmark focus**: Measure per-call allocation count (should drop by 2 per conversion) and total bytes allocated. For latency, benchmark `getTransactions` with large Soroban metas (100KB+ TransactionMeta, 20+ events per tx, 50+ txs per page). Expect <5% latency improvement on typical loads, possibly 5-10% on extreme loads.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+- **`cmd/stellar-rpc/internal/xdr2json/conversion.go`** (lines 128-164): Replaced `CXDR(field)` + `defer FreeGoXDR(goRawXdr)` in `convertAnyBytes` with direct `C.xdr_t` construction from `unsafe.Pointer(&field[0])`, using `runtime.Pinner` to satisfy cgo pointer rules. Eliminated one `malloc + memcpy + free` per single-item conversion.
+
+- **`cmd/stellar-rpc/internal/xdr2json/conversion.go`** (lines 74-96): Replaced `CXDR(field)` loop + `FreeGoXDR` cleanup loop in `ConvertBytesSlice` with direct `C.xdr_t` construction from Go slice pointers, pinning each field's backing array via `runtime.Pinner`. Eliminated one `malloc + memcpy + free` per batch item.
+
+- **`cmd/stellar-rpc/internal/xdr2json/conversion.go`** (lines 156-166): Removed now-unused `CXDR` and `FreeGoXDR` functions from the xdr2json package (the preflight package retains its own independent copies).
+
+- **`cmd/stellar-rpc/lib/xdr2json/src/lib.rs`** (lines 138-143): The Rust side already used `slice::from_raw_parts` instead of `from_c_xdr` — copy #2 was already eliminated in a prior change. No additional Rust modification needed.
+
+### Demonstration
+
+The optimization eliminates copy #1 (Go → C via `C.CBytes`) from the xdr2json FFI path by passing Go `[]byte` backing arrays directly to Rust through pinned pointers. Combined with the already-eliminated copy #2 on the Rust side, every `ConvertBytes` and `ConvertBytesSlice` call now avoids two full payload copies (malloc + memcpy + free each). For a getTransactions response with 50 Soroban transactions and 20 events each (~1000 conversions), this eliminates ~2000 unnecessary allocator round-trips and up to 20MB+ of redundant memcpy for large TransactionMeta payloads.
+
+### Test Results
+
+All Go tests pass: `go test ./...` — 11 packages tested (xdr2json, methods, db, config, feewindow, ingest, integrationtest, ledgerbucketwindow, network, preflight, util). All Rust tests pass: `cargo test` — 2 test suites (ffi: 1 test, xdr2json: 1 test). Tests were run with `-race` flag for the xdr2json package specifically to verify cgo pointer safety.
