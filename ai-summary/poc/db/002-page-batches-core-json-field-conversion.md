@@ -79,3 +79,25 @@ Note: `jsonifySlice` for DiagnosticEvents (line 157) already uses `ConvertBytesS
 - **Change description**: Restructure the JSON conversion to a two-pass approach: (1) collect all `db.Transaction` structs (or just their `.Result`, `.Envelope`, `.Meta` byte slices) for the page, (2) call `ConvertBytesSlice(xdr.TransactionResult{}, allResults)`, `ConvertBytesSlice(xdr.TransactionEnvelope{}, allEnvelopes)`, `ConvertBytesSlice(xdr.TransactionMeta{}, allMetas)`, (3) assign the returned JSON back to each `TransactionInfo` by index. DiagnosticEvents can also be flattened across the page using `jsonifySlice`. The refactor must preserve early-exit on limit and correct cursor tracking.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` and integration tests for JSON format responses should cover correctness. Error propagation must identify which transaction failed (index tracking).
 - **Benchmark focus**: Write a Go benchmark calling `processTransactionsInLedger` (or a synthetic equivalent) with 50–200 transactions in JSON mode. Measure ns/op and allocs/op. Expect ~500µs–1ms reduction in per-page latency, visible primarily in the CGo/overhead portion of CPU profiles. The existing `BenchmarkConvertBytesVsSlice` in `conversion_test.go` validates the per-field-type savings in isolation.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+- **`cmd/stellar-rpc/internal/methods/json.go`** (lines 94–211): Added `pendingTxJSON` struct and `batchConvertTransactionsToJSON` function. The batch function collects all Result, Envelope, Meta byte slices plus all DiagnosticEvent, TransactionEvent, and ContractEvent byte slices across the entire page, then makes exactly 6 `ConvertBytesSlice` CGo calls total (one per XDR type). Results are assigned back to each `TransactionInfo` by index. Also added `protocol` import.
+
+- **`cmd/stellar-rpc/internal/methods/get_transactions.go`** (lines 78–84, 152–162, 289, 352, 362–371): Modified `processTransactionsInLedger` to accept a `*[]pendingTxJSON` parameter. The JSON branch now defers conversion — it calls `db.ParseTransaction` and appends to the pending slice instead of calling `transactionToJSON`, `jsonifySlice`, and `BuildEventsJSONFromTransaction` per-transaction. The caller `getTransactionsByLedgerSequence` creates the pending slice, passes it through the per-ledger loop, and calls `batchConvertTransactionsToJSON` after all ledgers are processed.
+
+### Demonstration
+
+The optimization restructures `getTransactions` JSON conversion from per-transaction to page-level batching. For a page of N transactions, CGo crossings drop from 6×N (3 core fields + 3 event types per tx) to exactly 6 total, regardless of page size. This eliminates per-call overhead including `reflect.TypeOf`, `C.CString` allocation, `panic::catch_unwind` setup, and `TypeVariant::from_str` resolution for all but 6 calls across the entire response.
+
+### Test Results
+
+All 18 tests in `cmd/stellar-rpc/internal/methods/` pass, including `TestGetTransactions_JSONFormat` which validates JSON field presence/absence for the batched path. Full `make go-test` passes across all packages (methods, db, xdr2json, feewindow, ingest, config, network, preflight, util, integrationtest, etc.).
