@@ -78,3 +78,25 @@ Fail file 002-duplicate-deadline-timers-per-request.md is related (both concern 
 - **Change description**: Swap the wrapping order so backlog limiter is outermost. For the per-method stack: `durationLimiter = MakeJrpcRequestDurationLimiter(handler.underlyingHandler, ...); queueLimiter = MakeJrpcBacklogQueueLimiter(durationLimiter.Handle, ...); handlersMap[...] = queueLimiter.Handle`. For the global HTTP stack: `durationLimitedBridge = MakeHTTPRequestDurationLimiter(bridge, ...); handler = MakeHTTPBacklogQueueLimiter(durationLimitedBridge, ...)`.
 - **Correctness check**: The existing tests in `cmd/stellar-rpc/internal/network/backlogQ_test.go` and `cmd/stellar-rpc/internal/network/requestdurationlimiter_test.go` cover both limiters. Verify that: (1) rejected requests return the same error format, (2) admitted requests still get both backlog counting and duration limiting, (3) the `pending` counter accurately reflects running handlers when a duration timeout fires (may need to adjust the backlog decrement to fire from inside the duration limiter's goroutine rather than from defer in the backlog wrapper).
 - **Benchmark focus**: Measure rejected-request latency and allocation count under overload (e.g., queue limit=1, flood with 100 concurrent getTransactions). Also measure admitted-request RPS before/after to quantify the indirect benefit from reduced GC pressure. Expect <5% RPS improvement for admitted requests, with more visible improvement in rejected-request latency (should be near-instant vs. current goroutine-spawn overhead).
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/jsonrpc.go:303-337` — Swapped the per-method JRPC middleware wrapping order. Previously: `queueLimiter = MakeJrpcBacklogQueueLimiter(handler.underlyingHandler, ...); durationLimiter = MakeJrpcRequestDurationLimiter(queueLimiter.Handle, ...); handlersMap[...] = durationLimiter.Handle`. Now: `durationLimiter = MakeJrpcRequestDurationLimiter(handler.underlyingHandler, ...); queueLimiter = MakeJrpcBacklogQueueLimiter(durationLimiter.Handle, ...); handlersMap[...] = queueLimiter.Handle`. The backlog limiter is now outermost, so rejected requests hit the cheap atomic check before any timer/goroutine/context allocation.
+
+- `cmd/stellar-rpc/internal/jsonrpc.go:350-379` — Swapped the global HTTP middleware wrapping order. Previously: `queueLimitedBridge = MakeHTTPBacklogQueueLimiter(bridge, ...); handler = MakeHTTPRequestDurationLimiter(queueLimitedBridge, ...)`. Now: `durationLimitedBridge = MakeHTTPRequestDurationLimiter(bridge, ...); handler = MakeHTTPBacklogQueueLimiter(durationLimitedBridge, ...)`. Same rationale: backlog rejection is now fail-fast before any duration limiter overhead.
+
+### Demonstration
+
+The optimization reorders the middleware stack so that the backlog queue limiter (a single atomic increment/compare/decrement) runs before the duration limiter (which allocates 2 timers, a channel, a context, a buffered response writer, and spawns a goroutine). Under queue saturation, rejected requests now fail immediately at the atomic check instead of paying the full allocation cost of both duration limiter layers. This eliminates 4 timers, 2 goroutines, 2 channels, 2 contexts, and 1 buffered writer per rejected request, reducing GC pressure during overload spikes.
+
+### Test Results
+
+All 18 Go test packages pass, including all network package tests (backlogQ_test.go and requestdurationlimiter_test.go). All Rust tests pass (1 passed). No test failures or regressions introduced by the middleware reorder.
