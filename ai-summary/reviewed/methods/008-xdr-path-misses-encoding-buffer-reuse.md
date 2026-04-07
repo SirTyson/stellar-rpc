@@ -100,3 +100,34 @@ The optimization eliminates all intermediate `[]byte` allocations in the `getTra
 ### Test Results
 
 All 12 test packages in `cmd/stellar-rpc/internal/...` pass, including the `methods` package which contains dedicated `getTransactions` tests covering default limits, custom limits, cursor pagination, JSON format, missing ledgers, and edge cases. Tests run with `-race` flag enabled, confirming no data races.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The code change itself is plausible and passed an independent `make -j8 build-stellar-rpc` plus `make go-test`, but the performance claim did not survive adversarial benchmarking. My first paired sweep suggested a win at 200 RPS and fewer errors near saturation, yet targeted rechecks contradicted that result:
+
+- Initial sweep at **200 RPS**: baseline `p50=71.295ms`, optimized `p50=48.191ms`
+- Recheck at **200 RPS**: baseline `p50=107.519ms`, optimized `p50=273.663ms`
+- Initial sweep at **350 RPS**: baseline `42` errors, optimized `1` error
+- Recheck at **340 RPS**: baseline `1` error, optimized `0` errors
+
+Those numbers are too unstable to support a confirmed latency reduction or a stable zero-error throughput ceiling increase attributable to the optimization rather than run-to-run variance on the live futurenet-backed setup.
+
+### Revision Instructions
+
+1. Re-run the benchmark with **multiple paired repetitions per RPS level** (at least 3 baseline/optimized pairs), alternating the order or restarting between pairs so one side does not always benefit from warmer caches or better network conditions.
+2. Report **medians or another aggregate across repetitions**, not a single run, and only claim an improvement if it holds on repeat at the same RPS or as a higher zero-error ceiling.
+3. If the latency/RPS win still does not hold up, reframe this as an **Informational allocation/GC optimization** and support it with allocation profiling rather than throughput claims.
+4. Keep the scope on `getTransactions` XDR only; the code path and implementation are in scope, but the current benchmark evidence is not strong enough for confirmation.
+
+### Checks Passed So Far
+
+- The claimed inefficiency is real: `getTransactions` previously marshaled XDR to fresh `[]byte` values and then re-encoded those bytes to base64 strings for every transaction/event field.
+- The implementation targets that exact waste by using `xdr.EncodingBuffer` on the XDR response path only.
+- The change appears behavior-safe: the encoder buffer is request-local, no shared mutable state was introduced, and the repository build plus Go tests passed independently.

@@ -90,3 +90,32 @@ Compared to H003's analysis showing SQL fetch costs of ~100-1000µs per ledger, 
   3. **Upstream SDK change**: The cleanest long-term fix is to modify `NewLedgerTransactionReaderFromLedgerCloseMeta` to accept a pre-computed network ID and/or allow injecting an existing `envelopesByHash` map.
 - **Correctness check**: The existing `getTransactions` tests (in `get_transactions_test.go`) cover pagination, cursor resume, and multi-ledger scans. Any replacement reader must produce identical `LedgerTransaction` values with the same hash, envelope, result, and meta fields. The envelope-to-meta ordering invariant (envelopes keyed by hash, looked up by `TransactionHash(i)`) must be preserved.
 - **Benchmark focus**: Measure per-request latency for `getTransactions` with a cursor mid-way through a 100-200 tx ledger and limit=10. The hashing overhead should drop from ~400-1400µs to near zero for cached/lazy approaches, yielding a **10-30% latency reduction** on this workload pattern.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/methods/ledger_transaction_reader.go`** (new file) — Custom `ledgerTransactionReader` that replaces the SDK's `ingest.LedgerTransactionReader` for the `getTransactions` hot path. Key optimizations:
+   - Accepts a pre-computed `[32]byte` network ID instead of a passphrase string, eliminating redundant `sha256.Sum256([]byte(passphrase))` calls (~300ns saved per envelope)
+   - Reuses a single `bytes.Buffer` across all envelope hashing within `storeTransactions`, eliminating per-envelope buffer allocations
+   - `hashTransactionInEnvelopeWithID` inlines the envelope type dispatch and uses the pre-computed network ID directly in the `TransactionSignaturePayload`, avoiding the SDK's `network.ID()` call chain
+
+2. **`cmd/stellar-rpc/internal/methods/get_transactions.go`** (lines 23-29, 86, 382-392) — Modified `transactionsRPCHandler` to:
+   - Add `networkID [32]byte` field, computed once at handler construction via `hash.Hash([]byte(networkPassphrase))`
+   - Replace `ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(h.networkPassphrase, ledger)` with `newLedgerTransactionReader(h.networkID, ledger)` in `processTransactionsInLedger`
+
+3. **`cmd/stellar-rpc/internal/methods/get_transactions_test.go`** (all handler constructions) — Added `networkID: testNetworkID` field to all test handler constructions, using a package-level `testNetworkID` computed from the test passphrase constant.
+
+### Demonstration
+
+The optimization eliminates two per-envelope inefficiencies in the `getTransactions` hot path: (1) redundant SHA-256 computation of the network passphrase on every envelope (~300ns × N savings), and (2) per-envelope `bytes.Buffer` allocation for XDR marshaling. For a 200-transaction ledger, this saves ~60µs from passphrase hashing alone, plus allocation overhead. The custom reader is a drop-in replacement that produces identical `ingest.LedgerTransaction` values, preserving the envelope-to-meta ordering invariant required by the hash-sorted result structure.
+
+### Test Results
+
+All 21 tests in `cmd/stellar-rpc/internal/methods/` pass (including `TestGetTransactions_DefaultLimit`, `TestGetTransactions_CustomLimitAndCursor`, `TestGetTransactions_JSONFormat`, etc.). Full `make go-test` suite passes across all packages: methods, db, config, feewindow, ingest, integrationtest, ledgerbucketwindow, network, preflight, rpcdatastore, util, xdr2json.
