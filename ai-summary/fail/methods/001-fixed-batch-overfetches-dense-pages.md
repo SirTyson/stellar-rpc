@@ -91,3 +91,32 @@ Traced the full `getTransactions` batch-fetch path from `getTransactionsByLedger
 - **Change description**: Make the first batch size proportional to the requested limit so that small-limit requests against dense ledgers fetch and deserialize only a few ledgers instead of 50. Subsequent batches remain at 50 to preserve sparse-scan performance.
 - **Correctness check**: All existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` must pass. The gap validation, cursor pagination, and limit enforcement logic are all batch-size-agnostic.
 - **Benchmark focus**: The key metric is p50/p99 latency for `getTransactions` with small limits (1, 5, 10) against dense ledgers near the tip. A synthetic Go benchmark should set up ledgers with 50-100 transactions each and measure with `limit=1` and `limit=5`. Target: >20% latency reduction for these small-limit cases. Also run the full blaster sweep to verify no regression on the mixed workload. Allocation reduction can be measured with `-benchmem` to confirm fewer bytes allocated per operation.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_FAIL
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+**Failed At**: poc
+**Iterations**: 0
+
+### Failure Reason
+
+The target code no longer exists. The hypothesis targets `const batchSize = 50` and `BatchGetLedgerMetas` in `getTransactionsByLedgerSequence`, but both have been replaced by a fundamentally superior index-driven approach that already solves the overfetch problem more thoroughly than the proposed adaptive batch sizing.
+
+The current implementation (as of 2026-04-07) uses:
+1. **`GetLedgerSequencesWithTransactions(ctx, startSeq, startApplicationOrder, endSeq, limit)`** — a SQL subquery with row-level precision that uses the `limit` parameter to identify only the exact ledger sequences containing the next N transactions. For `limit=1` against a dense ledger, this returns exactly 1 ledger sequence.
+2. **`BatchGetLedgersBySequences(ctx, sequences)`** — fetches only the specific ledgers identified by the index query (using `WHERE sequence IN (...)` rather than a range scan).
+
+This is strictly better than the proposed adaptive batch sizing because:
+- It fetches exactly the ledgers needed, not a heuristic estimate (`min(max(limit*2, 4), 50)`)
+- It skips empty ledgers entirely (the hypothesis's adaptive approach would still scan empty ledgers in the range)
+- It requires only 2 SQL queries regardless of density (index query + LCM fetch), vs the hypothesis's iterative batching
+
+The `BatchGetLedgerMetas` function (range-based fetch with full XDR deserialization) is no longer called from `getTransactionsByLedgerSequence` — it only remains in `mocks.go`. The `batchSize` constant does not exist anywhere in the file.
+
+### Changes Attempted
+
+No source changes were made. The optimization cannot be applied because the target code pattern (hardcoded batch size with range-based LCM fetching) has been completely replaced by index-driven fetching that already eliminates the overfetch.
