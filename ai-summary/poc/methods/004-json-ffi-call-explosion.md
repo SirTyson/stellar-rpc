@@ -104,3 +104,39 @@ Comparing to total request time (including DB reads of ~20-40ms), the conversion
 - **Change description**: Replace the N-calls-per-transaction fan-out with a single batch CGo call that groups all conversions by type. The Rust side resolves each `TypeVariant` once, wraps in one `panic::catch_unwind`, and processes all items of the same type sequentially, returning concatenated results.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/` and `cmd/stellar-rpc/internal/xdr2json/conversion_test.go` cover the JSON conversion path. The batch API must produce byte-identical output to the current per-item API.
 - **Benchmark focus**: Measure `getTransactions` with `format=json` latency for pages of 50, 100, and 200 transactions with varying event counts (0, 10, 50 events per transaction). Target metric: p50/p99 latency reduction of 10-20% for event-heavy pages. Also measure CGo call count reduction and allocation volume reduction via pprof.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/lib/xdr2json/src/lib.rs`** (lines 45-52, 170-296):
+   - Added `BatchConversionResult` struct (`#[repr(C)]`) with results array, count, and batch-level error pointer.
+   - Added `xdr_batch_to_json()` FFI function: resolves `TypeVariant` once from the typename, wraps all processing in a single `panic::catch_unwind`, iterates over the CXDR array borrowing each buffer directly (no `from_c_xdr` clone), and returns a contiguous array of `ConversionResult` structs. Per-item errors are stored inline; batch-level errors (panic during type resolution) are stored separately.
+   - Added `free_batch_conversion_result()` to properly free the results array, per-item CStrings, and the batch struct.
+
+2. **`cmd/stellar-rpc/lib/xdr2json.h`** (lines 9-24):
+   - Declared `batch_conversion_result_t` C struct matching the Rust `BatchConversionResult`.
+   - Declared `xdr_batch_to_json()` and `free_batch_conversion_result()` function prototypes.
+
+3. **`cmd/stellar-rpc/internal/xdr2json/conversion.go`** (lines 61-126):
+   - Rewrote `ConvertBytesSlice` to use the batch FFI: pre-allocates an array of `C.xdr_t` for non-empty fields, makes a single `C.xdr_batch_to_json()` call, then extracts per-item JSON results using `unsafe.Slice`. Empty fields are handled on the Go side without crossing FFI.
+
+4. **`cmd/stellar-rpc/internal/methods/json.go`** (lines 61-90):
+   - Rewrote `jsonifySliceOfSlices` to flatten all inner slices into a single batch before calling `jsonifySlice`, then splits results back into the original shape. This reduces N CGo crossings (one per inner slice) to 1 for `ContractEvents` processing.
+
+### Demonstration
+
+The optimization reduces CGo boundary crossings from N-per-batch to 1-per-batch for all homogeneous XDR-to-JSON conversions. For a 200-transaction page with events, this collapses thousands of individual FFI calls (each incurring ~1.6-2.9µs of fixed overhead from `panic::catch_unwind`, `from_c_string`, `TypeVariant::from_str`, and `Box` allocation) into a handful of batch calls where those costs are paid once. The `jsonifySliceOfSlices` flattening further reduces multiple batch calls to a single one for contract events.
+
+### Test Results
+
+- All 5 tests in `cmd/stellar-rpc/internal/xdr2json/` pass (including `TestConvertBytesSlice`, `TestConvertBytesSliceEmpty`, `TestConvertBytesSliceWithEmptyElement` which validate batch correctness against individual conversion)
+- All 12 tests in `cmd/stellar-rpc/internal/methods/` pass (including `TestGetTransactions_JSONFormat`, `TestGetTransaction_JSONFormat` which exercise the full JSON conversion path end-to-end)
+- Rust clippy passes with no warnings
+- Rust unit test `borrowed_slice_avoids_extra_clone_for_large_diagnostic_event` passes
