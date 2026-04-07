@@ -97,3 +97,36 @@ The optimization adds a bounded in-memory cache of per-ledger envelope-by-hash m
 ### Test Results
 
 All 47 tests in `cmd/stellar-rpc/internal/...` pass (including all `TestGetTransactions_*` variants: DefaultLimit, DefaultLimitExceedsLatestLedger, CustomLimit, CustomLimitAndCursor, InvalidStartLedger, LedgerNotFound, LimitGreaterThanMaxLimit, InvalidCursorString, JSONFormat, NoResults). The cache is nil-safe, so existing test constructions that don't set `envCache` continue to work identically via the uncached code path.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+- The code builds and existing tests pass, but the performance evidence is not strong enough to confirm the claim.
+- An isolated baseline that kept the current repo state and changed only `getTransactions` back to `ingest.NewLedgerTransactionReaderFromLedgerCloseMeta(...)` showed **no throughput gain**: both baseline and optimized sustained **500 RPS with 0 errors**, so the measured zero-error ceiling is unchanged at least through 500 RPS.
+- Latency improvements were inconsistent across the matched 50/100/150/200/300/400/500 RPS sweeps. Some runs improved median latency, but p95/p99 frequently regressed:
+  - 50 RPS: p50 **+11.1%**, p95 **+10.7%**, p99 **+4.2%**
+  - 100 RPS: p50 **+18.6%**, p95 **-10.6%**, p99 **-4.8%**
+  - 200 RPS: p50 **+1.3%**, p95 **+15.5%**, p99 **-7.1%**
+  - 300 RPS: p50 **+12.9%**, p95 **-9.7%**, p99 **-7.5%**
+  - 500 RPS: p50 **-11.0%**, p95 **-5.1%**, p99 **-2.6%**
+- The benchmark workload could not reproduce the PoC's stated trigger. Using the project's benchmarking tool against retained futurenet data, the densest practical seed window I could find still contained only **34 transactions across 200 ledgers**, far from the PoC's "dense ledgers with low-limit repeated polling" scenario. That makes the measured deltas easy to explain as workload variance rather than the cache.
+
+### Revision Instructions
+
+1. Rework the benchmark evidence so the project tool actually exercises repeated partial scans of the same transaction-dense ledgers. If the current retained futurenet dataset cannot provide that, use a real retained dataset/window that does, or explicitly downgrade the finding to **Informational** as a theoretical optimization with no demonstrated user-visible impact.
+2. Keep the performance claim tightly scoped to the cache/reader change under review. The current `get_transactions.go` diff also includes other optimizations, so the writeup must explain how the benchmark isolates the ledger-reader/cache effect specifically.
+3. Add a correctness check for the cached path itself (cache hit response equivalence versus uncached behavior) before resubmitting, since the existing test suite passes mostly through the nil-cache path.
+
+### Checks Passed So Far
+
+- `make -j8 build-stellar-rpc` passed on the reviewed tree.
+- `make go-test` passed on the reviewed tree.
+- `cargo test` passed on the reviewed tree.
+- Source tracing confirmed the old inefficiency exists and that the submitted change targets the intended `getTransactions` reader construction path.
+- An isolated before/after benchmark comparison was completed with the project's benchmarking tool, using the same DB state, same seed file, and matched 50-500 RPS sweeps.

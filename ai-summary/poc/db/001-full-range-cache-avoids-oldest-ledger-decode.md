@@ -77,3 +77,37 @@ The inefficiency is confirmed and is in the hot path:
 - **Change description**: Add `oldestLedgerSeq uint32` and `oldestLedgerCloseTime int64` to `dbCache`. In `getLedgerRangeWithCache`, check if oldest is cached (nonzero); if so, return both ends from cache without any DB query. In `commitAndUpdateCache`, after trimming, either (a) compute the new oldest seq from `latestSeq + 1 - retentionWindow` and read its close time via a partial-decode query, or (b) simply invalidate by setting oldest fields to 0 so the next read repopulates. Option (b) is simpler and still eliminates ~99.8% of redundant decodes. Update `ledgerReaderTx` to also snapshot `oldestLedgerSeq`/`oldestLedgerCloseTime` from cache, and update `ResetCache()` to zero the new fields.
 - **Correctness check**: `BenchmarkGetLedgerRange` (ledger_test.go:187-197) and existing `TestGetLedgerRange*` tests cover this code path. Ensure cached values match DB values by running range queries before and after commits.
 - **Benchmark focus**: Run `BenchmarkGetLedgerRange` before and after. Expect significant reduction in allocations per operation (ns/op may improve 5-50× for the range query itself). For end-to-end getTransactions latency with `limit=1` tip-polling, expect <5% improvement (Low severity) since batch LCM reads dominate.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/db/db.go`** (lines 54-55): Added `oldestLedgerSeq uint32` and `oldestLedgerCloseTime int64` fields to the `dbCache` struct, extending the write-through cache to track both ends of the retention window.
+
+2. **`cmd/stellar-rpc/internal/db/db.go`** (lines 69-70): Updated `ResetCache()` to zero the new oldest-ledger fields alongside the existing latest-ledger fields.
+
+3. **`cmd/stellar-rpc/internal/db/db.go`** (lines 173-176): Updated `getLatestLedgerSequence()` to backfill the oldest cache from ledger range data when it's missing (cold-start path).
+
+4. **`cmd/stellar-rpc/internal/db/db.go`** (lines 351-357): Added oldest-cache invalidation in `commitAndUpdateCache()`. When trimming advances the retention window past the cached oldest ledger, the oldest fields are zeroed so the next read repopulates them (option (b) from the reviewer's guidance).
+
+5. **`cmd/stellar-rpc/internal/db/ledger.go`** (lines 63-64): Added `oldestLedgerSeq` and `oldestLedgerCloseTime` fields to `ledgerReaderTx` so read transactions snapshot both ends of the cache.
+
+6. **`cmd/stellar-rpc/internal/db/ledger.go`** (lines 69-80): Added full-cache fast path to `ledgerReaderTx.GetLedgerRange()` — when both bounds are cached, returns immediately without any DB query.
+
+7. **`cmd/stellar-rpc/internal/db/ledger.go`** (lines 230-231): Updated `ledgerReader.NewTx()` to snapshot oldest-ledger cache fields into the `ledgerReaderTx` under the existing `RLock`.
+
+8. **`cmd/stellar-rpc/internal/db/ledger.go`** (lines 292-340): Rewrote `ledgerReader.GetLedgerRange()` with three tiers: (a) both cached → instant return, (b) latest cached → query only oldest and backfill cache, (c) neither cached → query both and backfill cache.
+
+### Demonstration
+
+The optimization eliminates the unconditional full XDR deserialization of the oldest retained `LedgerCloseMeta` blob on every `getTransactions` request. By caching both the oldest and latest ledger sequence/close-time in `dbCache`, the hot `GetLedgerRange()` path returns two cached scalars with zero DB I/O and zero XDR deserialization. The cache is invalidated (zeroed) only when `trimLedgers` advances the retention window during commit, so at most one request per ~5s commit cycle repopulates the oldest cache via the existing `getLedgerRangeWithCache` fallback — a ~500× reduction in range-query deserialization work at 100 RPS.
+
+### Test Results
+
+All 12 Go test packages in `cmd/stellar-rpc/internal/...` pass with `-race` flag, including `db` (2.88s), `methods` (1.59s), `feewindow` (6.40s), `ingest` (1.07s), and `integrationtest` (1.50s). Rust tests also pass (1 test in xdr2json crate). No test failures or regressions.

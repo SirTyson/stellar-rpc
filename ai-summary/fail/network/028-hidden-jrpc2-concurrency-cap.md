@@ -86,3 +86,30 @@ The inefficiency is confirmed and mechanically real:
 - **Change description**: Add `Concurrency: N` (where N is e.g., `4 * runtime.NumCPU()` or a new config option) to the `ServerOptions` in `bridgeOptions`. A simple first test: `Concurrency: 64` on an 8-core host.
 - **Correctness check**: The handlers already have their own concurrency controls via `BacklogJrpcQLimiter` (atomic counter) and `RPCRequestDurationLimiter` (goroutine + timeout). Raising the bridge semaphore does not bypass these safety layers. The `bufferedResponseWriter` and channel-based communication in the duration limiter are goroutine-safe by design.
 - **Benchmark focus**: Measure `getTransactions` RPS and p50/p99 latency at concurrency levels of 32, 64, 128, 256 on an 8-16 core host. Compare against baseline (NumCPU cap). Expect 5-20% RPS improvement at concurrency levels well above NumCPU. Monitor CPU utilization to verify the workload has an I/O component that benefits from additional concurrency.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_FAIL
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+**Failed At**: poc
+**Iterations**: 0
+
+### Failure Reason
+
+The optimization target no longer exists in the working tree. A prior PoC has already replaced `jhttp.NewBridge` (which used `jrpc2.NewServer` with its `runtime.NumCPU()` semaphore cap) with a `directBridge` implementation (`cmd/stellar-rpc/internal/directbridge.go`). The `directBridge` dispatches JSON-RPC requests directly to handler functions via `jrpc2.Assigner.Assign()` → `h(ctx, jrequest)`, completely bypassing `jrpc2.NewServer`, its `semaphore.NewWeighted`, and the `invoke` throttle point. There is no `jrpc2.ServerOptions` struct to set `Concurrency` on, and no semaphore in the request path.
+
+Specifically:
+- **Committed code** (`HEAD`): Uses `jhttp.NewBridge` with `jrpc2.ServerOptions{Logger: ...}`, leaving `Concurrency` at zero → defaults to `runtime.NumCPU()`. The hypothesis was valid against this code.
+- **Working tree** (modified by prior PoC): Uses `newDirectBridge(decorateHandlers(...))` which calls handlers directly with no jrpc2 server, no semaphore, and no concurrency cap at the bridge layer. The `jhttp` import has been removed entirely from `jsonrpc.go`.
+
+The hypothesis correctly identified a real bottleneck in the committed code, but the more comprehensive `directBridge` optimization has already eliminated the entire jrpc2 server/client/channel infrastructure from the request path — making the proposed `Concurrency` tuning moot.
+
+### Changes Attempted
+
+No source code changes were made. The optimization cannot be implemented because:
+1. `jhttp.NewBridge` is no longer called in `jsonrpc.go`
+2. `jrpc2.ServerOptions` is no longer constructed
+3. The `directBridge` has no concurrency cap to tune — requests are dispatched directly to handlers, with concurrency governed only by the per-method `BacklogJrpcQLimiter` and `RPCRequestDurationLimiter`
