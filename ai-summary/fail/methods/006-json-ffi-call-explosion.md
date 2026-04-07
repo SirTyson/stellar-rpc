@@ -96,7 +96,7 @@ Comparing to total request time (including DB reads of ~20-40ms), the conversion
 
 ### PoC Guidance
 
-- **Target code**: 
+- **Target code**:
   - Rust: `cmd/stellar-rpc/lib/xdr2json/src/lib.rs` — add a new `xdr_batch_to_json` FFI function that accepts an array of (typename, xdr_bytes) pairs and returns an array of JSON strings, resolving each `TypeVariant` once per unique type name and wrapping in a single `panic::catch_unwind`
   - C header: `cmd/stellar-rpc/lib/xdr2json.h` — declare the new batch function with appropriate C types
   - Go: `cmd/stellar-rpc/internal/xdr2json/conversion.go` — add `ConvertBatch(items []BatchItem) ([]json.RawMessage, error)` that marshals all items into a single C buffer, makes one CGo call, and unmarshals all results
@@ -140,3 +140,34 @@ The optimization reduces CGo boundary crossings from N-per-batch to 1-per-batch 
 - All 12 tests in `cmd/stellar-rpc/internal/methods/` pass (including `TestGetTransactions_JSONFormat`, `TestGetTransaction_JSONFormat` which exercise the full JSON conversion path end-to-end)
 - Rust clippy passes with no warnings
 - Rust unit test `borrowed_slice_avoids_extra_clone_for_large_diagnostic_event` passes
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Exercises claimed inefficiency**: PARTIAL — the change batches homogeneous event conversions, but `transactionToJSON()` still performs three per-transaction `ConvertBytes` FFI calls for result, envelope, and meta. The optimization removes only part of the fan-out described in the hypothesis.
+2. **Realistic preconditions**: FAIL — the project benchmark tool drives `getTransactions` over real retained ledgers with random page sizes from 1-200 and a 50/50 JSON-vs-base64 mix (`stellar-rpc-blaster/internal/util/constants.go`, `vary_parameters.go`). Under that required workload, the optimization did not produce a stable win.
+3. **Inefficiency vs by-design**: INEFFICIENCY — the old per-item event conversions are a legitimate optimization target, but they are not dominant enough in practice here.
+4. **Final severity**: FAIL — independent `stellar-rpc-blaster` sweeps on baseline vs optimized binaries showed no throughput improvement and mostly worse latency. p50 latency changed as follows: 10 RPS `15.631ms -> 15.303ms` (+2.1%), 25 RPS `13.575ms -> 14.031ms` (-3.4%), 50 RPS `14.431ms -> 14.903ms` (-3.3%), 75 RPS `15.199ms -> 15.247ms` (-0.3%), 100 RPS `15.599ms -> 17.071ms` (-9.4%), 150 RPS `19.343ms -> 20.207ms` (-4.5%), 200 RPS `33.727ms -> 46.367ms` (-37.5%). p95/p99 also regressed materially at 150-200 RPS, and both versions stayed at 0 errors.
+5. **In scope**: YES — the modified code is in the `getTransactions` JSON serialization path.
+6. **Benchmark methodology**: CORRECT — built baseline from a clean detached-HEAD worktree, optimized from the current worktree, used the same futurenet DB and regenerated seed data with `stellar-rpc-blaster`, then ran identical 30s duration / 10s ramp-up sweeps at 10, 25, 50, 75, 100, 150, and 200 RPS.
+7. **Alternative explanations**: VARIANCE / WORKLOAD DILUTION — the tiny low-RPS improvement disappears or reverses at moderate and high load. The most plausible explanation is that batching event-only conversions helps a narrow event-heavy JSON subset, but not enough to move end-to-end `getTransactions` performance under the project's benchmark mix.
+8. **Novelty**: NOVEL
+
+### Rejection Reason
+
+Independent benchmark evidence does not support an end-to-end `getTransactions` improvement. The optimization keeps the same throughput ceiling and regresses median and tail latency at realistic and high load, so the PoC does not clear the proof bar for a confirmed performance finding.
+
+### Failed Checks
+
+- 1
+- 2
+- 4
+- 7
