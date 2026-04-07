@@ -9,12 +9,12 @@
   "final_review_not_viable": 0,
   "final_review_revisions": 0,
   "condensations": 0,
-  "publishes": 0,
+  "publishes": 1,
   "agent_errors": 2,
   "agent_timeouts": 0,
-  "total_spawned": 43,
+  "total_spawned": 44,
   "input_tokens": 0,
-  "output_tokens": 567854,
+  "output_tokens": 570744,
   "cache_read_tokens": 0,
   "per_subsystem": {
     "network": {
@@ -54,7 +54,8 @@
       "poc_not_viable": 4,
       "errors": 2,
       "poc_viable": 1
-    }
+    },
+    "claude-sonnet-4-6": {}
   },
   "tokens_by_stage": {
     "hypothesis": {
@@ -76,6 +77,11 @@
       "input": 0,
       "output": 18458,
       "cache_read": 0
+    },
+    "publish": {
+      "input": 0,
+      "output": 2890,
+      "cache_read": 0
     }
   },
   "tokens_by_model": {
@@ -87,6 +93,11 @@
     "claude-opus-4-6": {
       "input": 0,
       "output": 406503,
+      "cache_read": 0
+    },
+    "claude-sonnet-4-6": {
+      "input": 0,
+      "output": 2890,
       "cache_read": 0
     }
   },
@@ -295,6 +306,11 @@
       "final_review",
       "gpt-5.4",
       407.9
+    ],
+    [
+      "publish",
+      "claude-sonnet-4-6",
+      77.1
     ]
   ],
   "costs": {
@@ -308,6 +324,13 @@
             "total_cost": 2.88,
             "premium_requests": 96
           },
+          "claude-sonnet-4-6": {
+            "input_tokens": 0,
+            "output_tokens": 2890,
+            "cache_read_tokens": 0,
+            "total_cost": 0.03,
+            "premium_requests": 1
+          },
           "gpt-5.4": {
             "input_tokens": 0,
             "output_tokens": 161351,
@@ -316,10 +339,10 @@
             "premium_requests": 9
           }
         },
-        "provider_cost": 3.15
+        "provider_cost": 3.18
       }
     },
-    "total_cost": 3.15,
+    "total_cost": 3.18,
     "stages": {
       "hypothesis": {
         "copilot": {
@@ -346,6 +369,13 @@
         "copilot": {
           "input_tokens": 0,
           "output_tokens": 18458,
+          "premium_requests": 1
+        }
+      },
+      "publish": {
+        "copilot": {
+          "input_tokens": 0,
+          "output_tokens": 2890,
           "premium_requests": 1
         }
       }
