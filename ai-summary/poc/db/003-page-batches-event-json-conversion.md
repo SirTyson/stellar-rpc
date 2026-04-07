@@ -78,3 +78,31 @@ Severity downgraded from Medium to **Low**: the inefficiency is real and the bat
 - **Change description**: After collecting all transactions for the page (or up to the limit), flatten all DiagnosticEvents byte slices across transactions into one `[][]byte`, all TransactionEvents into another, and all ContractEvents into a third. Call `ConvertBytesSlice` once per event type (3 calls total). Use offset tracking (similar to `jsonifySliceOfSlices` lines 84-88) to split results back into per-transaction arrays. For ContractEvents, track both per-transaction and per-operation offsets to reconstruct `[][]json.RawMessage` per transaction. Must preserve early-exit on limit and correct cursor tracking — the two-pass approach should collect only up to `limit` transactions before converting.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` and integration tests for JSON format responses cover correctness. Ensure empty event arrays are preserved (transactions with no events must still produce `[]` not `null`). The `jsonifySliceOfSlices` function's empty-slice handling (line 66) provides the template.
 - **Benchmark focus**: Write a Go benchmark with 50–200 Soroban transactions each having 5–10 events in JSON mode. Measure ns/op and allocs/op. Expect ~500µs reduction in per-page latency, visible primarily in CGo overhead. Best combined with H002's core field batching for cumulative ~1ms savings. The existing `BenchmarkConvertBytesVsSlice` in `conversion_test.go` validates per-field-type savings in isolation.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+The H003 event batching optimization was implemented jointly with H002's core field batching in a single `batchConvertTransactionsToJSON` function. The specific event-related changes:
+
+- **`cmd/stellar-rpc/internal/methods/json.go:94-211`** — Added `pendingTxJSON` struct and `batchConvertTransactionsToJSON` function. The function flattens DiagnosticEvents (lines 136-147), TransactionEvents (lines 149-161), and ContractEvents (lines 163-182) across all page transactions into three flat `[][]byte` slices, calls `ConvertBytesSlice` once per event type (3 CGo crossings total), then uses offset tracking to split results back into per-transaction arrays. ContractEvents use two-level offset tracking (per-tx and per-operation via `perTxOpCounts`) to reconstruct `[][]json.RawMessage`.
+
+- **`cmd/stellar-rpc/internal/methods/json.go:63-92`** — Updated `jsonifySliceOfSlices` to use the flatten-convert-split pattern (single `ConvertBytesSlice` call for all inner slices). This function remains used by the single-transaction `getTransaction` endpoint.
+
+- **`cmd/stellar-rpc/internal/methods/get_transactions.go:152-162`** — In `processTransactionsInLedger`, the JSON branch now defers conversion by collecting `pendingTxJSON` structs instead of calling per-transaction `transactionToJSON`, `jsonifySlice`, and `BuildEventsJSONFromTransaction`.
+
+- **`cmd/stellar-rpc/internal/methods/get_transactions.go:364-371`** — After the page loop, `batchConvertTransactionsToJSON` performs all 6 batch conversions (3 core + 3 event types) in a single pass.
+
+### Demonstration
+
+The optimization reduces event JSON conversion from 3×N `ConvertBytesSlice` CGo crossings (one per event type per transaction) to exactly 3 crossings for the entire page. Each eliminated CGo crossing saves ~850ns of overhead (Go reflection, C.CString allocation, goroutine thread pinning, Rust panic::catch_unwind + TypeVariant parsing). For a 200-transaction page, this eliminates ~597 redundant crossings, saving ~508µs. Combined with H002's core field batching (also in the same function), total overhead savings are ~1ms per page.
+
+### Test Results
+
+All 17 Go test packages pass (including `methods`, `db`, `xdr2json`, and all others under `cmd/stellar-rpc/internal/...`). All 2 Rust tests pass. Build succeeds cleanly with `make build-stellar-rpc`.
