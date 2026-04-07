@@ -32,3 +32,32 @@ The FFI signature is `LCMTransactionsToJSON(lcmBytes []byte)` with no pagination
 ## Anti-Evidence
 
 This is most valuable when many transactions share a ledger; on sparse ledgers with one or two transactions each, whole-ledger extraction is already close to page-sized work. Any fix must still preserve the current cursor semantics and fee-bump/event grouping, so the FFI will need an application-order-aware extraction contract rather than a simple slice truncation.
+
+---
+
+## Review
+
+**Verdict**: NOT_VIABLE
+**Date**: 2026-04-07
+**Reviewed by**: claude-opus-4-6, high
+**Novelty**: PASS — distinct mechanism from fail/db/012 (FFI-level bounds vs. planner query), though same dense-ledger precondition
+**Failed At**: reviewer
+
+### Trace Summary
+
+Traced the full `processChunksJSON` path through the Rust FFI (`lcm_transactions_to_json` → `extract_transactions_json`). Confirmed the code pattern exists: Rust serializes all transactions in the LCM to JSON before Go filters by `startTxIdx` and `limit`. However, the upstream planner (`GetLedgerSequencesWithTransactions`, lines 400-411) already uses row-level precision to fetch only the minimal set of ledger sequences, and real futurenet workloads have ~1 transaction per ledger — making the within-ledger waste effectively zero.
+
+### Code Paths Examined
+
+- `cmd/stellar-rpc/internal/methods/get_transactions.go:processChunksJSON:257-340` — FFI call at line 288 converts entire LCM; Go filtering at lines 298-332 discards extras
+- `cmd/stellar-rpc/internal/xdr2json/conversion.go:LCMTransactionsToJSON:45-79` — FFI signature takes only `lcmBytes []byte`, no bounds parameters
+- `cmd/stellar-rpc/lib/xdr2json/src/lib.rs:extract_transactions_json:477-557` — Rust loop `for i in 0..count` serializes every transaction with `serde_json::to_value` for result, meta, envelope, and events
+- `cmd/stellar-rpc/internal/methods/get_transactions.go:getTransactionsByLedgerSequence:400-411` — existing row-level planner already limits which ledgers are fetched to those containing page-relevant transactions
+
+### Why It Failed
+
+The inefficiency is real in theory but does not manifest on actual workloads. The existing index-driven planner (`GetLedgerSequencesWithTransactions`) already ensures only ledgers containing page-relevant transactions are fetched. The within-ledger waste (converting transactions before cursor or after limit) only matters with dense ledgers (many txns per ledger). Real futurenet benchmark data shows `avg_tx_per_ledger ≈ 1.00` and `max_tx_per_ledger = 2` (established during fail/db/012's final review benchmarks at 300/500/700 RPS), meaning each LCM contains at most 1-2 transactions — the FFI converts exactly what the page needs. Adding `start_idx`/`count` parameters to the FFI interface would increase CGo/Rust interface complexity and add branching inside the Rust extraction loop for zero measurable benefit.
+
+### Lesson Learned
+
+Dense-ledger optimizations (reducing per-ledger transaction processing waste) share the same fundamental limitation: real Stellar network workloads produce sparse ledgers (~1 tx/ledger). Both this hypothesis and fail/db/012 target the same unrealized precondition. Future hypotheses should verify ledger density on the actual benchmark workload before proposing within-ledger optimizations.

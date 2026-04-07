@@ -108,3 +108,36 @@ The optimization adds tx-scoped streaming primitives (`StreamLedgerRange`, `Stre
 ### Test Results
 
 All Go tests pass: `db` (0.5s), `methods` (1.5s), and the full `go test ./...` suite (all packages OK). No test failures or regressions.
+
+---
+
+## Final Review
+
+**Verdict**: REJECTED
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+**Failed At**: final-review
+
+### Adversarial Analysis
+
+1. **Does the change address the claimed inefficiency?** Partially in theory, but not on the actual benchmarked path. The current `getTransactions` implementation already narrows work to ledgers returned by `GetLedgerSequencesWithTransactions`, and the reviewed change only swaps the non-JSON/XDR branch from `BatchGetLedgersBySequences` to `StreamLedgersBySequences`.
+2. **Are the preconditions realistic?** Not for the project's benchmark workload. `stellar-rpc-blaster` sends a 50/50 JSON/base64 mix for `getTransactions`, so this change can only affect about half of requests even before considering that the index-driven ledger selection has already removed most empty-ledger overfetch.
+3. **Is the original code inefficient or working as designed?** The old path still had some theoretical waste, but the remaining waste is too small to dominate end-to-end latency after the earlier index-based pruning.
+4. **Does the benchmark improvement match the claim?** No. Independent reruns on isolated baseline/optimized trees using the project blaster, the same seeded data, and the same synced futurenet DB showed a regression in p50 latency at every tested load and no throughput gain:
+   - **100 RPS**: p50 `6.063 -> 6.655 ms` (**9.76% worse**), p95 `32.239 -> 32.863 ms` (**1.94% worse**), p99 `35.903 -> 36.063 ms` (**0.45% worse**)
+   - **200 RPS**: p50 `6.307 -> 6.875 ms` (**9.01% worse**), p95 `34.079 -> 33.663 ms` (**1.22% better**), p99 `38.239 -> 38.463 ms` (**0.59% worse**)
+   - **200 RPS warm baseline recheck**: p50 `6.247 -> 6.875 ms` (**10.05% worse**), p95 `33.663 -> 33.663 ms` (**flat**), p99 `37.983 -> 38.463 ms` (**1.26% worse**)
+   - **300 RPS**: p50 `6.847 -> 7.343 ms` (**7.24% worse**), p95 `35.135 -> 35.487 ms` (**1.00% worse**), p99 `41.823 -> 41.183 ms` (**1.53% better**)
+   - **Throughput ceiling in the tested range**: `300 RPS -> 300 RPS` with zero errors for both builds
+5. **Is the optimization in scope?** Yes, but it does not produce the claimed performance benefit.
+6. **Is the benchmark methodology correct?** Yes. This review used `make -j8 build-stellar-rpc`, `make go-test`, `cargo test`, `stellar-rpc-blaster generate`, and a real blaster sweep on a local futurenet-backed RPC instance.
+7. **Can the observed result be explained without the optimization?** Yes. The added row-by-row streaming/callback path likely adds overhead while only touching the XDR half of mixed benchmark traffic, so the theoretical savings are outweighed by the unchanged JSON half and the already-pruned selected-ledger fetch path.
+8. **Is this optimization novel?** Irrelevant to the verdict; measured performance regressed.
+
+### Rejection Reason
+
+Independent benchmarking does not confirm the hypothesis. The reviewed change makes `getTransactions` slower on median latency at 100, 200, and 300 RPS and does not increase zero-error throughput, so the optimization claim is unsupported.
+
+### Failed Checks
+
+1, 2, 4, 7
