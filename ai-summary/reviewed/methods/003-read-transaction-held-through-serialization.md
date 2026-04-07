@@ -100,3 +100,41 @@ The optimization reduces SQLite WAL snapshot lifetime by releasing the read tran
 ### Test Results
 
 All Go tests pass: `go test ./...` reports success across all 13 packages with test files, including `cmd/stellar-rpc/internal/methods` (8 getTransactions tests covering default limit, custom limit, cursor pagination, JSON format, error cases, and no-results scenarios). Race detector enabled for methods tests with no issues found.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The optimization regresses `getTransactions` pagination correctness when the request starts from a cursor inside the first fetched ledger and the requested `limit` crosses a 50-ledger batch boundary.
+
+`fetchLedgerMetas()` decides when to stop prefetching by summing `l.CountTransactions()` for each fetched ledger, but that count includes transactions that will later be skipped by the starting cursor. In the starting ledger this can overestimate how many response items are actually available from the prefetched batch, causing the function to stop one batch too early.
+
+Independent reproduction:
+
+- Existing required verification passed: `make -j8 build-stellar-rpc` and `make go-test`
+- Additional adversarial reproduction against the modified code:
+  - dataset: 60 ledgers, 2 transactions per ledger
+  - request: `cursor=toid.New(1, 2, 1)`, `limit=100`
+  - expected: 100 transactions (98 from ledgers 2-50 plus 2 from ledger 51)
+  - actual: 98 transactions returned
+
+This happens because the first batch (ledgers 1-50) is counted as 100 transactions during prefetch, even though ledger 1 contributes zero transactions after the cursor is applied.
+
+### Revision Instructions
+
+1. Fix the prefetch stopping condition so it counts only transactions that can actually be emitted after applying the starting cursor. At minimum, discount skipped transactions in the starting ledger when accumulating `totalTxCount`.
+2. Add a regression test that crosses the 50-ledger batch boundary with a cursor positioned late in the starting ledger. The reproduced case above is sufficient.
+3. Re-run the required build/test flow after the fix.
+4. Only after correctness is restored, run the required blaster baseline-vs-optimized benchmark flow and record the reviewer-side measurements. The current attempt does not have valid benchmark evidence because the implementation is not yet correct.
+
+### Checks Passed So Far
+
+- The reported root cause is plausible: the current code no longer holds the SQLite read transaction during serialization.
+- The modified code builds successfully.
+- The existing Go test suite passes on the current worktree.
+- The optimization remains in scope for `getTransactions`.

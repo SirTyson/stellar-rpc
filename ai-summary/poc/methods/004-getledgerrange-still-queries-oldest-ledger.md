@@ -78,3 +78,37 @@ Traced the full call chain from `getTransactionsByLedgerSequence` (line 232) thr
 - **Change description**: Extend `dbCache` with `oldestLedgerSeq`/`oldestLedgerCloseTime`. In `getLedgerRangeWithCache`, return immediately when both oldest and latest are cached. Populate oldest cache on first `GetLedgerRange` call. Update oldest cache in `Commit` after `trimLedgers` advances the window (set to `latestLedgerSeq + 1 - retentionWindow` when trimming occurs). Add `ResetCache` coverage for new fields.
 - **Correctness check**: Existing tests for `GetLedgerRange` in `cmd/stellar-rpc/internal/db/ledger_test.go` should continue to pass. Also verify `getTransactions` integration tests still return correct `OldestLedger`/`OldestLedgerCloseTime` values.
 - **Benchmark focus**: Measure `getTransactions` latency at limit=1 with startLedger near latest. The oldest-ledger SQL query count per request should drop from 1 to 0 (after first request warms the cache). Expect 1-5% latency reduction for small-page queries; larger pages will see proportionally smaller improvement.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+
+### Changes Made
+
+1. **`cmd/stellar-rpc/internal/db/db.go:49-56`** — Extended `dbCache` struct with `oldestLedgerSeq` and `oldestLedgerCloseTime` fields, mirroring the existing latest-ledger cache pattern.
+
+2. **`cmd/stellar-rpc/internal/db/db.go:62-69`** — Updated `ResetCache()` to zero out the new oldest-ledger cache fields alongside the existing latest fields.
+
+3. **`cmd/stellar-rpc/internal/db/db.go:160-172`** — Updated `getLatestLedgerSequence` to also populate the oldest cache when warming the cache from a `GetLedgerRange` call.
+
+4. **`cmd/stellar-rpc/internal/db/db.go:332-349`** — Updated `commitAndUpdateCache` in `writeTx.Commit` to invalidate the oldest cache when `trimLedgers` advances the retention window past the cached oldest sequence.
+
+5. **`cmd/stellar-rpc/internal/db/ledger.go:55-60`** — Added `oldestLedgerSeq` and `oldestLedgerCloseTime` fields to `ledgerReaderTx` struct.
+
+6. **`cmd/stellar-rpc/internal/db/ledger.go:62-82`** — Updated `ledgerReaderTx.GetLedgerRange` to return immediately from cache when both oldest and latest bounds are available, eliminating the SQL query entirely.
+
+7. **`cmd/stellar-rpc/internal/db/ledger.go:155-170`** — Updated `ledgerReader.NewTx` to snapshot the oldest cache fields into `ledgerReaderTx` alongside the existing latest fields.
+
+8. **`cmd/stellar-rpc/internal/db/ledger.go:225-275`** — Rewrote `ledgerReader.GetLedgerRange` with a three-tier strategy: (a) both cached → return immediately, (b) only latest cached → query oldest and populate cache, (c) neither cached → query both and populate oldest cache.
+
+### Demonstration
+
+When both oldest and latest ledger bounds are cached, `GetLedgerRange` returns immediately without any SQL query or XDR deserialization — eliminating a per-request full-BLOB read and deserialization of `LedgerCloseMeta` (tens to hundreds of KB). The oldest cache is invalidated only when `trimLedgers` advances the retention window (once per ~5s ledger close), so the vast majority of requests hit the fully-cached path. This converts `getTransactions`'s fixed per-request DB cost into a once-per-ledger-close cost.
+
+### Test Results
+
+All Go tests pass: db (0.481s), methods (0.281s), feewindow (0.871s), ingest (0.043s), integrationtest (0.088s), config, ledgerbucketwindow, network, preflight, rpcdatastore, util, xdr2json — all OK. No test failures.
