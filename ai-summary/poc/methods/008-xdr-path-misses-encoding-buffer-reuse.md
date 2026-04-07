@@ -74,3 +74,29 @@ Traced the complete `getTransactions` XDR path from `processTransactionsInLedger
 - **Change description**: Create an `xdr.NewEncodingBuffer()` at the top of `processTransactionsInLedger` (or in the calling `getTransactionsByLedgerSequence`). In the `default` format branch, replace `base64.StdEncoding.EncodeToString(tx.Result)` with `enc.MarshalBase64(&ingestTx.Result.Result)`, and similarly for Meta, Envelope, and all event types. This eliminates the intermediate `[]byte` fields and reuses the encoder's internal buffer across all transactions in the page.
 - **Correctness check**: Existing tests in `cmd/stellar-rpc/internal/methods/get_transactions_test.go` and integration tests in `cmd/stellar-rpc/internal/integrationtest/transaction_test.go` cover the XDR response format and should validate output equivalence.
 - **Benchmark focus**: Allocation count and bytes allocated per `getTransactions` call (via `testing.B` with `b.ReportAllocs()`). Expect a significant reduction in allocs/op (potentially 50-80% fewer allocations in the marshal+encode phase) but a more modest reduction in ns/op (<5% total request latency).
+
+---
+
+## PoC Attempt
+
+**Result**: POC_PASS
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4.6, high
+
+### Changes Made
+
+- `cmd/stellar-rpc/internal/methods/get_transactions.go` (lines 70-262):
+  - Added `enc *xdr.EncodingBuffer` parameter to `processTransactionsInLedger`.
+  - Created `xdr.NewEncodingBuffer()` in `getTransactionsByLedgerSequence` (line 309), passed to all `processTransactionsInLedger` calls so the buffer is reused across all ledgers and transactions in a single request.
+  - For the default (XDR) format path: bypassed `db.ParseTransaction` entirely. Metadata fields (TransactionHash, ApplicationOrder, FeeBump, Successful, Ledger) are extracted directly from `ingestTx`. XDR fields are encoded directly from typed values using `enc.MarshalBase64()` — `&ingestTx.Result.Result`, `&ingestTx.UnsafeMeta`, `&ingestTx.Envelope`, plus each diagnostic/transaction/contract event.
+  - For the JSON format path: kept `db.ParseTransaction` since `xdr2json.ConvertBytes` requires `[]byte` inputs.
+  - Added `buildEventsXDRDirect()` helper that encodes `TransactionEvents` and `ContractEvents` directly from typed XDR values using the shared `EncodingBuffer`.
+  - Removed unused `encoding/base64` import (no longer needed in this file).
+
+### Demonstration
+
+The optimization eliminates all intermediate `[]byte` allocations in the `getTransactions` XDR response path. Instead of marshaling each XDR value to a fresh `[]byte` via `MarshalBinary()` and then allocating another `string` via `base64.StdEncoding.EncodeToString()`, the code now uses `xdr.EncodingBuffer.MarshalBase64()` which goes directly from typed XDR values to base64 strings while reusing the encoder's internal byte buffer across all transactions and events in the page. For a page of 200 transactions with 5 events each, this eliminates ~3200 intermediate allocations (1600 `[]byte` + 1600 redundant buffer allocations within `MarshalBinary`).
+
+### Test Results
+
+All 12 test packages in `cmd/stellar-rpc/internal/...` pass, including the `methods` package which contains dedicated `getTransactions` tests covering default limits, custom limits, cursor pagination, JSON format, missing ledgers, and edge cases. Tests run with `-race` flag enabled, confirming no data races.
