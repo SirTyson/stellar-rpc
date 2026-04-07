@@ -122,3 +122,28 @@ The optimization replaces a linear O(ledger-range) scan with an index-driven O(l
 ### Test Results
 
 All existing tests pass: `make go-test` completes successfully across all packages (db, methods, feewindow, ingest, integrationtest, ledgerbucketwindow, network, preflight, rpcdatastore, util, xdr2json). The full build (`go build ./cmd/stellar-rpc/`) compiles without errors.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The optimization changes `getTransactions` semantics for corrupted sparse ranges. Before this PoC, a request over a retained range with a missing ledger gap failed with `database does not contain metadata for ledger: N`; after the PoC, the handler silently skips missing ledgers that have no `transactions` rows and returns success. I verified this both from the pre-change code/test (`git show HEAD:.../get_transactions.go` and `.../get_transactions_test.go`) and with a local repro test against the current implementation, which failed because `err` was `nil` when ledger 2 was missing.
+
+That behavior change is visible in the PoC itself: `TestGetTransactions_LedgerNotFound` was rewritten from "expect InvalidParams for missing ledger 2" to "missing gap is handled gracefully." This violates the hypothesis's own anti-evidence requirement that missing-ledger errors remain consistent and means the PoC is not safe to confirm yet.
+
+### Revision Instructions
+
+1. Keep the index-driven lookup, but restore the original corruption invariant: if the requested retained range has a missing ledger, `getTransactions` must still surface `database does not contain metadata for ledger: N` instead of skipping the gap.
+2. Add tests that preserve the original missing-ledger error behavior and cover the sparse/index-driven path explicitly. At minimum, restore the old `TestGetTransactions_LedgerNotFound` expectation and add a test showing the optimized path still errors when a ledger gap exists.
+3. Re-run the independent benchmark only after correctness is restored. Any benchmark result from the current revision is not actionable because the optimized code changes endpoint behavior.
+
+### Checks Passed So Far
+
+- The code change does target the claimed inefficiency: it uses the existing `transactions(ledger_sequence, application_order)` index to avoid scanning empty ledgers.
+- The modified tree builds successfully with `make -j8 build-stellar-rpc`.
+- The existing Go test suite passes with `make go-test`.
