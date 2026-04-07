@@ -106,3 +106,29 @@ On the dominant single-write HTTP path (`jhttp.writeJSON` → one `w.Write(bits)
 ### Test Results
 
 All existing tests in `cmd/stellar-rpc/internal/network/` pass (including `requestdurationlimiter_test.go` — HTTP limiting, no-limiting, warn, panic recovery; JRPC limiting, no-limiting, warn; and all backlog queue tests). Full `make go-test` passes across all 14 packages with no failures.
+
+---
+
+## Final Review — Needs Revision
+
+**Date**: 2026-04-07
+**Final review by**: gpt-5.4, high
+
+### What Needs Fixing
+
+The code-path claim is directionally correct and the implementation builds and passes `make go-test`, but the benchmark evidence is not yet strong enough to confirm the finding. My isolated baseline/optimized worktrees differed only in `cmd/stellar-rpc/internal/network/requestdurationlimiter.go`, and the synchronized 200 RPS control pair did show lower median and p95 latency for the optimized build (`p50 30.191 -> 26.175 ms`, `p95 91.455 -> 79.871 ms`), but the same pair also regressed tail latency (`p99 128.895 -> 143.871 ms`). The earlier 200 RPS pair moved in the opposite direction on p50 (`23.407 -> 26.623 ms`), so the current evidence still has enough run-to-run variance that I cannot confidently attribute the observed deltas to this optimization alone.
+
+The 400 RPS results are also not yet confirmation-quality. Under synced control conditions, baseline failed with `1223` errors and optimized with `3` errors, but **both** runs violated the project's acceptance rule because they had non-zero errors and a p50 jump far above the allowed 20% step-up from the previous valid level. That means the current data does **not** establish a higher zero-error throughput ceiling, only a different overload profile.
+
+### Revision Instructions
+
+1. Re-run the benchmark only after `getHealth` reports `healthy`; discard the initial unsynced baseline run.
+2. Keep the isolated baseline/optimized worktrees that differ only by `requestdurationlimiter.go`, but run an alternating control sequence at the highest valid load level (for example `baseline-200`, `optimized-200`, `baseline-200`, `optimized-200`) and report the average/median of those repeated runs.
+3. If claiming a throughput benefit, repeat the same alternating procedure at 400 RPS and explicitly apply the project's validity rules: zero errors and no >20% p50 jump vs. the previous valid level. Do not treat the current 400 RPS runs as a ceiling increase because both are invalid by that rule.
+4. In the revised write-up, call out the mixed tail-latency result at 200 RPS (`p99` regression in the synced control pair) and explain why the optimization should still be considered a net win, if repeated runs continue to show that.
+
+### Checks Passed So Far
+
+- Targeted code trace passed: the HTTP duration limiter still buffers the full response body, and the optimized `Write` implementation is the only source delta between the isolated benchmark builds.
+- Safety/correctness check passed at the current level: the multi-write fallback is present, and `make -j8 build-stellar-rpc` plus `make go-test` succeeded.
+- Benchmark tooling check passed: `stellar-rpc-blaster generate` and `stellar-rpc-blaster run` both worked against the local futurenet-backed instance with a fixed seed corpus.
