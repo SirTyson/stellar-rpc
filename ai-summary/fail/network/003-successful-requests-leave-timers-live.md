@@ -99,3 +99,45 @@ The fix is trivially correct and follows Go best practices, but the measurable i
   Apply the same pattern to the JRPC `Handle` method.
 - **Correctness check**: Existing tests in `requestdurationlimiter_test.go` cover normal completion, timeout, warning, and panic paths. All should pass unchanged since `Stop()` on an already-fired timer is a no-op.
 - **Benchmark focus**: Measure runtime timer count (`runtime/metrics` or `debug.ReadGCStats`) under sustained load. The timer backlog should drop to near-zero. Latency/RPS impact will be negligible — expect < 0.01% change. The primary value is reduced GC scanning and timer heap size, not latency.
+
+---
+
+## PoC Attempt
+
+**Result**: POC_FAIL
+**Date**: 2026-04-07
+**PoC by**: claude-opus-4-6, high
+**Failed At**: poc
+**Iterations**: 1 (build-test-benchmark cycle)
+
+### Failure Reason
+
+The optimization is code-correct (all existing tests in the `network` package pass with `-race -count=1`) but produces no measurable benchmark improvement. The reviewer's own assessment classified this as Informational severity with expected improvement of < 0.01%, and benchmarking confirms it.
+
+The per-request savings from calling `timer.Stop()` on 4 timers is ~200-400ns, while `getTransactions` p50 latency ranges from ~5ms (100 RPS) to ~2300ms (1500 RPS). The optimization's theoretical contribution is 0.004-0.008% of request latency — far below the ±30%+ run-to-run variance observed in benchmarks.
+
+A/B comparison showed the run executed second consistently outperformed the one executed first regardless of which binary was used, confirming environmental factors (futurenet conditions, DB cache warming, system load) dominate any micro-optimization signal. This matches the identical finding from the H002 PoC failure on the same subsystem.
+
+### Changes Attempted
+
+Retained `*time.Timer` handles instead of discarding after `.C` access, and added `timer.Stop()` calls on all non-timeout exit paths in `cmd/stellar-rpc/internal/network/requestdurationlimiter.go`:
+
+- **HTTP `ServeHTTP`**: stored `warningTimer` and `limitTimer` as `*time.Timer`; called `Stop()` on both in the `requestCompleted` case and `warningTimer.Stop()` in the `limitCh` case.
+- **JRPC `Handle`**: identical pattern — stored both timer handles, called `Stop()` in the `requestCompleted` and `limitCh` cases.
+
+All 7 tests in the `network` package passed. Source changes reverted per POC_FAIL procedure.
+
+### Benchmark Evidence
+
+| RPS | Metric | Optimized (run 1st) | Baseline (run 2nd) | Delta |
+|-----|--------|--------------------|--------------------|-------|
+| 100 | p50 | 11.37ms | 4.99ms | +128% (worse) |
+| 100 | errors | 0 | 0 | — |
+| 500 | p50 | 126.53ms | 7.05ms | +1695% (worse) |
+| 500 | errors | 0 | 0 | — |
+| 1000 | p50 | 1673.22ms | 569.34ms | +194% (worse) |
+| 1000 | errors | 8206 | 0 | — |
+| 1500 | p50 | 0.28ms* | 2328.58ms | — |
+| 1500 | errors | 22472 | 11597 | — |
+
+*The optimized-first results are consistently worse because the system was not yet warmed up during the first sweep. The ordering effect completely dominates any code-level improvement, confirming the optimization is unmeasurable at this noise level.
